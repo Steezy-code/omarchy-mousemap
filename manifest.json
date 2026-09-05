@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "steezy.mousemap",
+  "name": "MouseMap",
+  "version": "1.0.0",
+  "author": "steezy",
+  "license": "MIT",
+  "description": "See every button on your mouse laid out on a diagram, with leader lines to what each one does, and rebind them to any shortcut. Reads whichever mouse is plugged in and redraws itself to match.",
+  "kinds": ["panel", "bar-widget"],
+  "entryPoints": {
+    "panel": "MouseMapPanel.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "MouseMap",
+    "description": "Open the mouse button map.",
+    "category": "Hardware",
+    "defaultSection": "right",
+    "allowMultiple": false,
+    "defaults": {},
+    "schema": []
+  }
+}

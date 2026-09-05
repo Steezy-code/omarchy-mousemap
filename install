@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Install MouseMap into the Omarchy shell's plugin directory.
+#
+# The plugin folder is a real directory rather than a symlink to this repo:
+# Quickshell watches the plugin tree for changes and does not follow a
+# symlinked directory, so a symlinked install silently stops hot-reloading
+# and you end up staring at stale code wondering why an edit did nothing.
+#
+# Re-run after editing to push changes to the shell.
+
+set -euo pipefail
+
+SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_ID="steezy.mousemap"
+DEST="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/$PLUGIN_ID"
+
+# Only the files the shell needs; no .git, no tests, no scratch.
+FILES=(
+  manifest.json
+  MouseMapPanel.qml
+  MouseCanvas.qml
+  ActionPicker.qml
+  BarWidget.qml
+  Devices.js
+  Profiles.js
+  Leaders.js
+  Actions.js
+  Config.js
+  README.md
+)
+
+# A previous symlinked install has to go, or the copy below writes through
+# it into the source tree.
+if [ -L "$DEST" ]; then
+  rm -f "$DEST"
+fi
+
+mkdir -p "$DEST/scripts"
+
+for file in "${FILES[@]}"; do
+  [ -f "$SOURCE/$file" ] || continue
+  cp -f "$SOURCE/$file" "$DEST/$file"
+done
+
+cp -f "$SOURCE/scripts/mousemap" "$DEST/scripts/mousemap"
+cp -f "$SOURCE/scripts/mousemap-sniff" "$DEST/scripts/mousemap-sniff"
+chmod +x "$DEST/scripts/mousemap" "$DEST/scripts/mousemap-sniff"
+
+echo "Installed to $DEST"
+
+if command -v omarchy-shell >/dev/null 2>&1; then
+  omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
+  echo "Shell plugins rescanned."
+fi
+
+if command -v omarchy >/dev/null 2>&1; then
+  if ! omarchy plugin list --json 2>/dev/null | grep -q "\"$PLUGIN_ID\""; then
+    echo "Plugin not discovered — check 'omarchy plugin list'."
+  fi
+fi
+
+cat <<EOF
+
+Next:
+  omarchy plugin enable $PLUGIN_ID     # once, if it is not enabled yet
+  omarchy-shell shell toggle $PLUGIN_ID
+EOF

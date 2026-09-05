@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""Show exactly what every button on a mouse emits.
+
+The panel's own "Detect buttons" pass asks Hyprland which BTN_* codes fire,
+which is enough for an ordinary mouse and needs no special permissions. It
+cannot see two things:
+
+  * a button the device sends as a *keyboard* key rather than a mouse
+    button, which is what a Logitech onboard profile does when a button is
+    assigned a keystroke or a G-shift macro, and
+  * a button the compositor consumes before a bind can observe it.
+
+This reads the evdev stream directly, so it sees everything the kernel
+sees. That needs read access to /dev/input/event*, which is root-only on a
+normal desktop, so run it with sudo:
+
+    sudo ./scripts/mousemap-sniff
+
+Read-only: it opens the device, prints what arrives, and never writes.
+"""
+
+import glob
+import os
+import re
+import struct
+import select
+import sys
+import time
+
+# struct input_event { struct timeval time; __u16 type; __u16 code; __s32 value; }
+# timeval is two longs, so 16 bytes on 64-bit.
+EVENT_FORMAT = "llHHi"
+EVENT_SIZE = struct.calcsize(EVENT_FORMAT)
+
+EV_KEY = 0x01
+EV_REL = 0x02
+EV_MSC = 0x04
+
+BTN_NAMES = {
+    0x110: "BTN_LEFT", 0x111: "BTN_RIGHT", 0x112: "BTN_MIDDLE",
+    0x113: "BTN_SIDE", 0x114: "BTN_EXTRA", 0x115: "BTN_FORWARD",
+    0x116: "BTN_BACK", 0x117: "BTN_TASK",
+}
+
+# Enough of the keyboard map to name what a remapped mouse button sends.
+KEY_NAMES = {
+    1: "ESC", 14: "BACKSPACE", 15: "TAB", 28: "ENTER", 29: "LEFTCTRL",
+    42: "LEFTSHIFT", 56: "LEFTALT", 57: "SPACE", 97: "RIGHTCTRL",
+    100: "RIGHTALT", 125: "LEFTMETA", 103: "UP", 105: "LEFT",
+    106: "RIGHT", 108: "DOWN", 104: "PAGEUP", 109: "PAGEDOWN",
+    102: "HOME", 107: "END", 111: "DELETE", 110: "INSERT",
+}
+for _i, _c in enumerate("1234567890"):
+    KEY_NAMES[2 + _i] = _c
+for _code, _name in zip(
+    [16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 30, 31, 32, 33, 34, 35, 36, 37,
+     38, 44, 45, 46, 47, 48, 49, 50],
+    list("qwertyuiopasdfghjkl") + list("zxcvbnm"),
+):
+    KEY_NAMES[_code] = _name.upper()
+for _i in range(12):
+    KEY_NAMES[59 + _i] = "F%d" % (_i + 1)
+
+
+def mice():
+    """Every event device that looks like a pointer, from /proc."""
+    found = []
+    try:
+        with open("/proc/bus/input/devices") as handle:
+            blocks = handle.read().split("\n\n")
+    except OSError as exc:
+        sys.exit("cannot read /proc/bus/input/devices: %s" % exc)
+
+    for block in blocks:
+        name = re.search(r'N: Name="([^"]*)"', block)
+        handlers = re.search(r"H: Handlers=(.*)", block)
+        if not name or not handlers:
+            continue
+        if "B: REL=" not in block:
+            continue
+        events = [h for h in handlers.group(1).split() if h.startswith("event")]
+        if events:
+            found.append((name.group(1).strip(), "/dev/input/" + events[0]))
+    return found
+
+
+def main():
+    devices = mice()
+    if not devices:
+        sys.exit("no pointer devices found")
+
+    if os.geteuid() != 0:
+        print("This needs to read /dev/input/event*, which is root-only.")
+        print("Re-run it as:  sudo %s" % " ".join(sys.argv))
+        print()
+        print("Devices it would watch:")
+        for name, path in devices:
+            print("  %-34s %s" % (name, path))
+        sys.exit(1)
+
+    handles = {}
+    for name, path in devices:
+        try:
+            handles[os.open(path, os.O_RDONLY | os.O_NONBLOCK)] = (name, path)
+        except OSError as exc:
+            print("skipping %s: %s" % (path, exc))
+
+    if not handles:
+        sys.exit("could not open any device")
+
+    print("Watching:")
+    for _fd, (name, path) in handles.items():
+        print("  %-34s %s" % (name, path))
+    print()
+    print("Press every button on the mouse, one at a time.")
+    print("Ctrl-C when you are done.")
+    print()
+
+    seen = {}
+    try:
+        while True:
+            ready, _, _ = select.select(list(handles), [], [], 0.5)
+            for fd in ready:
+                name, _path = handles[fd]
+                data = os.read(fd, EVENT_SIZE * 64)
+                for offset in range(0, len(data) - EVENT_SIZE + 1, EVENT_SIZE):
+                    _s, _us, etype, code, value = struct.unpack(
+                        EVENT_FORMAT, data[offset:offset + EVENT_SIZE])
+                    # Presses only; releases and autorepeat just add noise.
+                    if etype != EV_KEY or value != 1:
+                        continue
+                    if code >= 0x110:
+                        label = BTN_NAMES.get(code, "BTN_0x%x" % code)
+                        kind = "mouse button"
+                        hint = "mouse:%d" % code
+                    else:
+                        label = KEY_NAMES.get(code, "KEY_%d" % code)
+                        kind = "KEYBOARD key"
+                        hint = "sent as a keystroke, not a mouse button"
+                    key = (name, code)
+                    if key not in seen:
+                        seen[key] = (label, kind, hint)
+                        print("  %-14s %-16s %-22s %s" % (kind, label, hint, name))
+                    sys.stdout.flush()
+    except KeyboardInterrupt:
+        pass
+
+    print()
+    print("=" * 68)
+    if not seen:
+        print("Nothing was pressed.")
+        return
+
+    buttons = sorted(c for (_n, c) in seen if c >= 0x110)
+    keys = sorted(c for (_n, c) in seen if c < 0x110)
+
+    print("Mappable mouse buttons: %s" % (
+        ", ".join("%d (%s)" % (c, BTN_NAMES.get(c, "?")) for c in buttons) or "none"))
+    if keys:
+        print()
+        print("These buttons send KEYBOARD keys, so MouseMap cannot bind them")
+        print("as mouse buttons. Reassign them to plain buttons in the mouse's")
+        print("onboard profile (Logitech G HUB, or piper/ratbagd on Linux) and")
+        print("they will show up in the panel:")
+        for code in keys:
+            print("    %s (code %d)" % (KEY_NAMES.get(code, "KEY_%d" % code), code))
+    print()
+    print("Paste this back to Claude to have the panel updated.")
+
+
+if __name__ == "__main__":
+    main()

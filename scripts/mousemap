@@ -1,0 +1,293 @@
+#!/usr/bin/env bash
+# MouseMap's only path to the filesystem and the compositor.
+#
+# The panel owns all the logic — which buttons exist, what they should do,
+# what Lua that becomes. This script exists for the three things QML cannot
+# do safely on its own: gather the two inputs discovery needs in a single
+# round trip, put bytes on disk atomically, and poke Hyprland.
+#
+# Every write lands by rename(2) into the same directory, so a reader either
+# sees the old file or the complete new one, never a half-written config.
+# Nothing is written through a symlink.
+
+set -euo pipefail
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-mousemap"
+CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/mousemap.json"
+BINDINGS_LUA="$STATE_DIR/bindings.lua"
+HYPR_BINDINGS="${XDG_CONFIG_HOME:-$HOME/.config}/hypr/bindings.lua"
+
+# Refuse anything absurd rather than streaming it into the panel.
+MAX_BYTES=1048576
+
+die() { printf 'mousemap: %s\n' "$*" >&2; exit 1; }
+
+# ---------------------------------------------------------------- helpers
+
+# stdin -> path, atomically. The temp file is a sibling so the rename stays
+# on one filesystem and is therefore atomic.
+cmd_write() {
+  local path="${1:-}"
+  [ -n "$path" ] || die "write: no path"
+  [ -L "$path" ] && die "write: $path is a symlink"
+
+  local dir
+  dir="$(dirname "$path")"
+  mkdir -p "$dir"
+
+  local tmp
+  tmp="$(mktemp "$dir/.mousemap.XXXXXXXX")"
+  # Any failure from here on must not leave the stage behind.
+  trap 'rm -f "$tmp"' EXIT
+  cat >"$tmp"
+  chmod 0644 "$tmp"
+  mv -f "$tmp" "$path"
+  trap - EXIT
+}
+
+cmd_read() {
+  local path="${1:-}"
+  [ -n "$path" ] || die "read: no path"
+  [ -e "$path" ] || return 0          # missing is empty, not an error
+  [ -L "$path" ] && die "read: $path is a symlink"
+  [ -f "$path" ] || die "read: $path is not a regular file"
+  head -c "$MAX_BYTES" -- "$path"
+}
+
+# One-time snapshot of the user's own bindings.lua, taken before we ever
+# add our loader line to it. Never overwritten, so it always represents the
+# file as it was before this plugin touched anything.
+cmd_backup() {
+  local path="${1:-$HYPR_BINDINGS}"
+  local backup="$path.mousemap.bak"
+  [ -f "$path" ] || return 0
+  [ -e "$backup" ] && return 0
+  cp -p -- "$path" "$backup"
+  printf '%s\n' "$backup"
+}
+
+# ---------------------------------------------------------------- discovery
+
+# Both inputs the panel's discovery needs, as one JSON envelope, so the
+# panel makes a single Process call instead of racing two.
+#
+# /proc/bus/input/devices carries vendor:product and the evdev capability
+# bitmaps; hyprctl carries the name a device-scoped bind must use. Neither
+# alone is enough.
+cmd_detect() {
+  local proc="" hypr=""
+  [ -r /proc/bus/input/devices ] && proc="$(head -c "$MAX_BYTES" /proc/bus/input/devices)"
+  hypr="$(hyprctl devices -j 2>/dev/null || echo '{}')"
+
+  # Encode with python so the bitmaps and quotes survive intact. The same
+  # pass collects wireless-mouse batteries: the kernel's HID++ driver
+  # publishes them under /sys/class/power_supply with scope=Device, and
+  # each one's `device` link points at the very HID node the input device
+  # hangs off — so they can be matched to a mouse by path rather than by
+  # guessing from a name.
+  PROC="$proc" HYPR="$hypr" python3 -c '
+import json, os, glob
+
+def read(path):
+    try:
+        with open(path) as handle:
+            return handle.read().strip()
+    except OSError:
+        return ""
+
+batteries = []
+for entry in sorted(glob.glob("/sys/class/power_supply/*")):
+    # Device-scoped supplies are peripherals; anything else is the laptop.
+    if read(os.path.join(entry, "scope")) != "Device":
+        continue
+    try:
+        target = os.path.realpath(os.path.join(entry, "device"))
+    except OSError:
+        target = ""
+    # Paths are compared against the input device sysfs path, which is
+    # rooted at /devices, so drop the /sys prefix here.
+    if target.startswith("/sys"):
+        target = target[4:]
+    batteries.append({
+        "id": os.path.basename(entry),
+        "model": read(os.path.join(entry, "model_name")),
+        "manufacturer": read(os.path.join(entry, "manufacturer")),
+        "capacity": read(os.path.join(entry, "capacity")),
+        "level": read(os.path.join(entry, "capacity_level")),
+        "status": read(os.path.join(entry, "status")),
+        "serial": read(os.path.join(entry, "serial_number")),
+        "online": read(os.path.join(entry, "online")),
+        "path": target,
+    })
+
+print(json.dumps({
+    "proc": os.environ.get("PROC", ""),
+    "hypr": os.environ.get("HYPR", "{}"),
+    "batteries": batteries,
+}))
+'
+}
+
+# ---------------------------------------------------------------- apply
+
+cmd_reload() {
+  hyprctl reload >/dev/null 2>&1 || die "hyprctl reload failed"
+  local errors
+  errors="$(hyprctl configerrors 2>/dev/null || true)"
+  # Hyprland prints a "no errors" sentinel rather than nothing at all.
+  if [ -n "$errors" ] && ! printf '%s' "$errors" | grep -qi 'no errors'; then
+    printf '%s\n' "$errors"
+    exit 2
+  fi
+}
+
+# Load the generated bindings into the running compositor without a full
+# reload, for previewing a change. The file guards every bind with an
+# unbind, so re-running it is safe.
+cmd_live() {
+  [ -f "$BINDINGS_LUA" ] || die "live: nothing generated yet"
+  hyprctl eval "pcall(dofile, \"$BINDINGS_LUA\")" >/dev/null 2>&1 || die "hyprctl eval failed"
+}
+
+# ---------------------------------------------------------------- learn
+#
+# Behind a Logitech receiver the evdev capability bitmap describes the
+# dongle, not the mouse: it claims all sixteen BTN_MOUSE codes and a full
+# keyboard whatever is actually paired. The only way to know which buttons
+# a mouse really has is to watch the user press them.
+#
+# Reading the events directly would mean opening /dev/input/event*, which
+# needs the `input` group a desktop user does not have. So we ask the
+# compositor instead: bind every candidate code to a line in a log, and see
+# which ones ever fire. No permissions, no daemon.
+#
+# Left and right click are deliberately left alone. Grabbing them would
+# leave the user unable to click the panel telling them to press buttons.
+LEARN_LOG="$STATE_DIR/learn.log"
+LEARN_CODES="274 275 276 277 278 279 280 281 282 283 284 285 286 287"
+
+cmd_learn() {
+  case "${1:-}" in
+    arm)
+      mkdir -p "$STATE_DIR"
+      : >"$LEARN_LOG"
+      local lua=""
+      for code in $LEARN_CODES; do
+        lua+="pcall(hl.unbind, \"mouse:$code\") "
+        lua+="hl.bind(\"mouse:$code\", function() "
+        lua+="hl.dispatch(hl.dsp.exec_cmd(\"sh -c 'echo $code >> $LEARN_LOG'\")) "
+        lua+="end, { description = \"MouseMap learn $code\" }) "
+      done
+      hyprctl eval "$lua" >/dev/null 2>&1 || die "learn: hyprctl eval failed"
+      ;;
+    read)
+      [ -f "$LEARN_LOG" ] && sort -un "$LEARN_LOG" || true
+      ;;
+    disarm)
+      # A reload rebuilds every bind from the config files, which drops the
+      # probes and restores whatever the user actually has mapped.
+      rm -f "$LEARN_LOG"
+      hyprctl reload >/dev/null 2>&1 || true
+      ;;
+    *) die "learn: expected arm, read, or disarm" ;;
+  esac
+}
+
+# Float and size the panel window.
+#
+# A `float` window rule would be the obvious way to do this and it does not
+# work: Hyprland evaluates rules when the window maps, and Quickshell sets
+# the title a moment later, so a title match never sees it. Matching the
+# class instead would catch every Quickshell toplevel on the system, not
+# just ours.
+#
+# So the window is floated by address after it appears. Only a window that
+# is currently tiled is touched, which leaves a user who deliberately tiled
+# it alone.
+PANEL_TITLE_PREFIX="MouseMap"
+PANEL_W=1180
+PANEL_H=780
+
+cmd_float() {
+  local address
+  address="$(hyprctl clients -j 2>/dev/null | python3 -c '
+import json, sys
+prefix = sys.argv[1]
+try:
+    clients = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for client in clients:
+    if str(client.get("title", "")).startswith(prefix) and not client.get("floating"):
+        print(client.get("address", ""))
+        break
+' "$PANEL_TITLE_PREFIX")"
+
+  [ -n "$address" ] || return 0
+
+  # Omarchy drives Hyprland from Lua, so `hyprctl dispatch` takes Lua, not
+  # the legacy "setfloating address:0x..." string form — that parses as Lua
+  # and fails. Same shape as hypr/popout.lua, which does this for real.
+  # Forced opaque because Omarchy tags every window for its default
+  # translucency, and a diagram read against whatever happens to be behind
+  # it is a diagram you cannot read. `opaque` takes 1, not true — a boolean
+  # is rejected as a missing value.
+  hyprctl eval "
+local target = \"address:$address\"
+hl.dispatch(hl.dsp.window.float({ window = target, action = \"on\" }))
+hl.dispatch(hl.dsp.window.resize({ window = target, x = $PANEL_W, y = $PANEL_H }))
+hl.dispatch(hl.dsp.window.center({ window = target }))
+hl.dispatch(hl.dsp.window.set_prop({ window = target, prop = \"opaque\", value = 1 }))
+" >/dev/null 2>&1 || true
+}
+
+cmd_paths() {
+  python3 -c '
+import json, sys
+print(json.dumps({
+  "config": sys.argv[1], "bindings": sys.argv[2],
+  "hyprBindings": sys.argv[3], "stateDir": sys.argv[4],
+}))
+' "$CONFIG" "$BINDINGS_LUA" "$HYPR_BINDINGS" "$STATE_DIR"
+}
+
+cmd_status() {
+  printf 'config      %s %s\n' "$CONFIG" "$([ -f "$CONFIG" ] && echo '(present)' || echo '(none)')"
+  printf 'bindings    %s %s\n' "$BINDINGS_LUA" "$([ -f "$BINDINGS_LUA" ] && echo '(present)' || echo '(none)')"
+  printf 'hook        %s\n' "$(grep -q 'BEGIN mousemap' "$HYPR_BINDINGS" 2>/dev/null && echo 'installed' || echo 'not installed')"
+  if [ -f "$BINDINGS_LUA" ]; then
+    printf 'live binds  %s\n' "$(hyprctl binds -j 2>/dev/null | grep -c 'MouseMap:' || echo 0)"
+  fi
+}
+
+# ---------------------------------------------------------------- dispatch
+
+case "${1:-}" in
+  write)   shift; cmd_write "$@" ;;
+  read)    shift; cmd_read "$@" ;;
+  backup)  shift; cmd_backup "$@" ;;
+  detect)  cmd_detect ;;
+  reload)  cmd_reload ;;
+  live)    cmd_live ;;
+  float)   cmd_float ;;
+  learn)   shift; cmd_learn "$@" ;;
+  paths)   cmd_paths ;;
+  status)  cmd_status ;;
+  *)
+    cat >&2 <<'USAGE'
+usage: mousemap <command>
+
+  detect            gather /proc + hyprctl input state as JSON
+  read <path>       print a file, bounded and symlink-refusing
+  write <path>      install stdin at path, atomically
+  backup [path]     one-time snapshot of hypr/bindings.lua
+  reload            hyprctl reload, failing loudly on config errors
+  live              load generated bindings into the running compositor
+  float             float and size the panel window
+  learn arm|read|disarm
+                    watch which buttons the mouse actually has
+  paths             the paths this plugin uses, as JSON
+  status            what is installed and how many binds are live
+USAGE
+    exit 1 ;;
+esac
