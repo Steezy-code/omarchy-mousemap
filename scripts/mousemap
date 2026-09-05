@@ -208,13 +208,19 @@ cmd_learn() {
     read)
       [ -f "$LEARN_LOG" ] && sort -un "$LEARN_LOG" || true
       ;;
+    raw)
+      # Every press in order, repeats included. The guided pass wants the
+      # unique set; the placement test wants each individual press, so it
+      # can light a button up again every time you hit it.
+      [ -f "$LEARN_LOG" ] && cat "$LEARN_LOG" || true
+      ;;
     disarm)
       # A reload rebuilds every bind from the config files, which drops the
       # probes and restores whatever the user actually has mapped.
       rm -f "$LEARN_LOG"
       hyprctl reload >/dev/null 2>&1 || true
       ;;
-    *) die "learn: expected arm, read, or disarm" ;;
+    *) die "learn: expected arm, read, raw, or disarm" ;;
   esac
 }
 
@@ -309,7 +315,7 @@ usage: mousemap <command>
   reload            hyprctl reload, failing loudly on config errors
   live              load generated bindings into the running compositor
   float             float and size the panel window
-  learn arm|read|disarm
+  learn arm|read|raw|disarm
                     watch which buttons the mouse actually has
   paths             the paths this plugin uses, as JSON
   status            what is installed and how many binds are live

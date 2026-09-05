@@ -40,7 +40,8 @@ Item {
   }
 
   function requestClose() {
-    if (learning) stopLearn()
+    if (learning) cancelLearn()
+    if (testing) stopTest()
     window.visible = false
     if (shell && typeof shell.hide === "function") shell.hide(root.pluginId)
   }
@@ -64,6 +65,13 @@ Item {
 
   property bool learning: false
   property var learnedCodes: []
+
+  // Placement test: probes armed, but nothing is recorded and no action
+  // runs. Pressing a button lights it up on the diagram and selects it, so
+  // a button drawn in the wrong place can be moved on the spot.
+  property bool testing: false
+  property int testConsumed: 0
+  property int testPresses: 0
 
   // The action picker's working copy for the selected button, so a
   // half-typed command does not churn the config on every keystroke.
@@ -236,6 +244,31 @@ Item {
       action: "custom-command", mods: current.mods || [], key: current.key || "",
       command: command
     })
+    configRev++
+    dirty = true
+  }
+
+  // Move a button to a different spot on the shell. If something already
+  // occupies the target, the two swap rather than one silently vanishing.
+  function setPlace(code, placeId) {
+    if (!config.devices[deviceKey]) {
+      config.devices[deviceKey] = { label: "", learned: [], layout: {}, bindings: {} }
+    }
+    var entry = config.devices[deviceKey]
+    if (!entry.layout) entry.layout = {}
+
+    var slot = String(code)
+    var previous = entry.layout[slot] || ""
+
+    for (var other in entry.layout) {
+      if (!Object.prototype.hasOwnProperty.call(entry.layout, other)) continue
+      if (other === slot) continue
+      if (entry.layout[other] !== placeId) continue
+      if (previous !== "") entry.layout[other] = previous
+      else delete entry.layout[other]
+    }
+
+    entry.layout[slot] = placeId
     configRev++
     dirty = true
   }
@@ -574,6 +607,63 @@ Item {
   }
 
   function stopLearn() { cancelLearn() }
+
+  function startTest() {
+    testing = true
+    testConsumed = 0
+    testPresses = 0
+    selectedCode = -1
+    testTimer.start()
+    learnProc.command = device && device.hyprKbdName
+      ? [root.helper, "learn", "arm", device.hyprKbdName]
+      : [root.helper, "learn", "arm"]
+    learnProc.running = true
+    say("Press each button. It should light up where it sits on the mouse.")
+  }
+
+  function stopTest() {
+    testing = false
+    testTimer.stop()
+    disarmProc.running = true
+    say(testPresses === 0 ? "" : "Placement test finished.")
+  }
+
+  Timer {
+    id: testTimer
+    interval: 160
+    repeat: true
+    onTriggered: if (!testReadProc.running) testReadProc.running = true
+  }
+
+  // Reads every press in order rather than the unique set, so pressing the
+  // same button twice lights it up twice.
+  Process {
+    id: testReadProc
+    property string buffer: ""
+    command: [root.helper, "learn", "raw"]
+    stdout: StdioCollector { waitForEnd: true; onStreamFinished: testReadProc.buffer = text }
+    onExited: {
+      if (!root.testing) return
+      var lines = testReadProc.buffer.split("\n")
+      var codes = []
+      for (var i = 0; i < lines.length; i++) {
+        var code = parseInt(lines[i].trim(), 10)
+        if (isFinite(code)) codes.push(code)
+      }
+      if (codes.length <= root.testConsumed) return
+
+      var latest = codes[codes.length - 1]
+      root.testConsumed = codes.length
+      root.testPresses++
+      root.pulseCode = latest
+      pulseTimer.restart()
+
+      // Selecting it puts the placement controls in front of the user at
+      // the moment they can see the button is in the wrong spot.
+      root.selectButton(latest)
+      root.say("Pressed " + Devices.buttonName(latest) + " — " + root.buttonMeta(latest).role)
+    }
+  }
 
   Process { id: learnProc }
   Process {
@@ -1111,6 +1201,14 @@ Item {
             selected: root.learning
             tooltipText: "Walk through each button so MouseMap learns which ones exist and where they are."
             onClicked: root.learning ? root.cancelLearn() : root.startLearn()
+          }
+          Ui.Button {
+            text: root.testing ? "Stop test" : "Test placement"
+            bordered: true
+            selected: root.testing
+            enabled: !root.learning
+            tooltipText: "Press your mouse buttons and watch them light up, so you can check each one is drawn in the right place."
+            onClicked: root.testing ? root.stopTest() : root.startTest()
           }
           Ui.Button {
             text: "Rescan"

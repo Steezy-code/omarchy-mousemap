@@ -4,6 +4,7 @@ import qs.Commons
 import qs.Ui as Ui
 import "Actions.js" as Actions
 import "Devices.js" as Devices
+import "Profiles.js" as Profiles
 
 // What the selected button should do. Reads and writes through the panel
 // rather than holding its own copy, so the diagram and this list can never
@@ -18,6 +19,19 @@ Item {
   readonly property var binding: panel && code >= 0 ? panel.bindingFor(code) : null
   readonly property string currentAction: binding ? binding.action : "none"
   readonly property bool isProtected: meta ? meta.protected : false
+
+  // Placement controls open automatically during a test, since that is
+  // when a wrong position becomes visible.
+  property bool placesOpen: false
+  readonly property bool showPlaces: placesOpen || (panel ? panel.testing : false)
+
+  readonly property string currentPlace: {
+    if (!panel) return ""
+    var layout = panel.layout || ({})
+    return layout[String(code)] || ""
+  }
+
+  onCodeChanged: placesOpen = false
 
   ColumnLayout {
     anchors.fill: parent
@@ -96,6 +110,78 @@ Item {
 
     Rectangle {
       Layout.fillWidth: true
+      implicitHeight: 1
+      color: Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.12)
+    }
+
+    // ---------------------------------------------------------- placement
+    //
+    // Shown while testing, and on demand otherwise. Detection asks which
+    // button is which, but a mis-press during that pass puts a button in
+    // the wrong spot, and the only way to notice is to press it and see it
+    // light up somewhere unexpected. This is the fix for that moment.
+    Ui.PanelSectionHeader {
+      Layout.fillWidth: true
+      visible: root.showPlaces
+      text: "WHERE IS THIS BUTTON?"
+    }
+
+    Flow {
+      Layout.fillWidth: true
+      visible: root.showPlaces
+      spacing: Style.space(1)
+
+      Repeater {
+        model: Profiles.placeSteps()
+        delegate: Rectangle {
+          id: placeChip
+          required property var modelData
+          readonly property bool current: root.currentPlace === modelData.place
+          readonly property string label: {
+            var spec = Profiles.places()[modelData.place]
+            return spec ? spec.role : modelData.place
+          }
+          width: placeLabel.implicitWidth + Style.space(4)
+          height: placeLabel.implicitHeight + Style.space(3)
+          radius: Style.cornerRadius > 0 ? Style.cornerRadius : 4
+          color: current ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.20)
+                         : (placeMouse.containsMouse
+                            ? Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.09)
+                            : Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.04))
+          border.width: 1
+          border.color: current ? Color.accent
+                                : Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.14)
+
+          Text {
+            id: placeLabel
+            anchors.centerIn: parent
+            text: placeChip.label
+            color: placeChip.current ? Color.accent : Color.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+
+          MouseArea {
+            id: placeMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            onClicked: root.panel.setPlace(root.code, placeChip.modelData.place)
+          }
+        }
+      }
+    }
+
+    Ui.Button {
+      Layout.fillWidth: true
+      visible: !root.showPlaces
+      text: "Move this button…"
+      bordered: true
+      onClicked: root.placesOpen = true
+    }
+
+    Rectangle {
+      Layout.fillWidth: true
+      visible: root.showPlaces
       implicitHeight: 1
       color: Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.12)
     }
