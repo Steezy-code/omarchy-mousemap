@@ -166,6 +166,10 @@ cmd_live() {
 LEARN_LOG="$STATE_DIR/learn.log"
 LEARN_CODES="274 275 276 277 278 279 280 281 282 283 284 285 286 287"
 
+# Trigger ids match Devices.js: a mouse button is its own code, a keystroke
+# is 4096 + the xkb keycode.
+KEY_BASE=4096
+
 cmd_learn() {
   case "${1:-}" in
     arm)
@@ -178,6 +182,27 @@ cmd_learn() {
         lua+="hl.dispatch(hl.dsp.exec_cmd(\"sh -c 'echo $code >> $LEARN_LOG'\")) "
         lua+="end, { description = \"MouseMap learn $code\" }) "
       done
+
+      # A mouse whose onboard profile assigns a button a keystroke sends it
+      # from the receiver's keyboard interface, so it never appears as a
+      # mouse button and a mouse-only probe cannot see it at all.
+      #
+      # Watching for it means binding keys — which is only safe because
+      # every one of these is scoped to the mouse's own keyboard device.
+      # The real keyboard is untouched, which is what makes it acceptable
+      # to grab a range this wide, modifiers included.
+      local kbd="${2:-}"
+      if [ -n "$kbd" ]; then
+        local kc
+        for kc in $(seq 9 250); do
+          lua+="pcall(hl.unbind, \"code:$kc\") "
+          lua+="hl.bind(\"code:$kc\", function() "
+          lua+="hl.dispatch(hl.dsp.exec_cmd(\"sh -c 'echo \$(( $KEY_BASE + $kc )) >> $LEARN_LOG'\")) "
+          lua+="end, { description = \"MouseMap learn key $kc\", "
+          lua+="device = { inclusive = true, list = { \"$kbd\" } } }) "
+        done
+      fi
+
       hyprctl eval "$lua" >/dev/null 2>&1 || die "learn: hyprctl eval failed"
       ;;
     read)

@@ -16,6 +16,16 @@
 
 var CONFIG_VERSION = 1
 
+// Trigger ids: 272..287 are mouse buttons, KEY_BASE + xkb keycode is a
+// keystroke the mouse sends. Mirrors Devices.js, which owns the meaning.
+var KEY_BASE = 0x1000
+
+function validTrigger(id) {
+  if (!isFinite(id)) return false
+  if (id >= 0x110 && id <= 0x11f) return true
+  return id >= KEY_BASE && id <= KEY_BASE + 255
+}
+
 function defaults() {
   return { version: CONFIG_VERSION, scopeToDevice: true, devices: {} }
 }
@@ -43,7 +53,7 @@ function normalize(raw) {
     for (var placeKey in layout) {
       if (!Object.prototype.hasOwnProperty.call(layout, placeKey)) continue
       var placeCode = parseInt(placeKey, 10)
-      if (!isFinite(placeCode) || placeCode < 0x110 || placeCode > 0x11f) continue
+      if (!validTrigger(placeCode)) continue
       var placeId = String(layout[placeKey] || "")
       if (placeId !== "") clean.layout[String(placeCode)] = placeId
     }
@@ -51,7 +61,7 @@ function normalize(raw) {
     if (Array.isArray(entry.learned)) {
       for (var i = 0; i < entry.learned.length; i++) {
         var code = parseInt(entry.learned[i], 10)
-        if (isFinite(code) && code >= 0x110 && code <= 0x11f && clean.learned.indexOf(code) === -1) {
+        if (validTrigger(code) && clean.learned.indexOf(code) === -1) {
           clean.learned.push(code)
         }
       }
@@ -62,7 +72,7 @@ function normalize(raw) {
     for (var codeKey in bindings) {
       if (!Object.prototype.hasOwnProperty.call(bindings, codeKey)) continue
       var parsed = parseInt(codeKey, 10)
-      if (!isFinite(parsed) || parsed < 0x110 || parsed > 0x11f) continue
+      if (!validTrigger(parsed)) continue
       var binding = bindings[codeKey] || {}
       if (!binding.action || binding.action === "none") continue
       clean.bindings[String(parsed)] = {
@@ -158,9 +168,12 @@ function generateLua(devices, config, Actions) {
         continue
       }
 
+      var isKey = code >= KEY_BASE
+      var key = isKey ? "code:" + (code - KEY_BASE) : "mouse:" + code
+
       // Without device scoping every bind is global, so the first device
       // to claim a code wins and the rest would silently shadow it.
-      if (!scoped) {
+      if (!scoped && !isKey) {
         if (claimed[code]) {
           skipped.push({ device: device.key, code: code, reason: "button " + code + " is already bound globally by " + claimed[code] })
           continue
@@ -168,10 +181,30 @@ function generateLua(devices, config, Actions) {
         claimed[code] = device.label || device.key
       }
 
-      var key = "mouse:" + code
+
+      // A keystroke from the mouse can only ever be bound scoped to the
+      // mouse's keyboard device. Binding it globally would swallow that key
+      // on the real keyboard — for a button that sends Ctrl or a digit,
+      // that breaks typing outright — so it is refused instead.
+      var bindDevice = isKey ? device.hyprKbdName : device.hyprName
+      if (isKey && !bindDevice) {
+        skipped.push({
+          device: device.key, code: code,
+          reason: "This button sends a keystroke, and Hyprland does not report the mouse as a keyboard, so it cannot be bound safely."
+        })
+        continue
+      }
+      if (isKey && !config.scopeToDevice) {
+        skipped.push({
+          device: device.key, code: code,
+          reason: "This button sends a keystroke, which can only be bound with per-device scoping switched on."
+        })
+        continue
+      }
+
       var description = "MouseMap: " + resolved.label
       var options = "{ description = " + Actions.luaString(description)
-      if (scoped) options += ", device = { inclusive = true, list = { " + Actions.luaString(device.hyprName) + " } }"
+      if (scoped || isKey) options += ", device = { inclusive = true, list = { " + Actions.luaString(bindDevice) + " } }"
       options += " }"
 
       // Guarded unbind keeps the file idempotent when it is re-run into a
@@ -240,6 +273,8 @@ function withoutHook(text) {
 if (typeof module !== "undefined") {
   module.exports = {
     CONFIG_VERSION: CONFIG_VERSION,
+    KEY_BASE: KEY_BASE,
+    validTrigger: validTrigger,
     defaults: defaults,
     normalize: normalize,
     deviceEntry: deviceEntry,

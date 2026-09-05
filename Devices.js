@@ -47,11 +47,72 @@ var BUTTON_DEFAULTS = {
   0x117: "Task"
 }
 
+// ------------------------------------------------------------ triggers
+//
+// Not every button on a mouse sends a mouse button.
+//
+// A Logitech onboard profile can assign a button a keystroke or a G-shift
+// macro, and then it arrives at the compositor as a *keyboard* key — from
+// the receiver's keyboard interface, not its pointer one. Hyprland cannot
+// bind that as mouse:<n> because by then it is not a mouse button.
+//
+// It can, however, bind the key scoped to that keyboard device, which is
+// the mouse and nothing else. So a button is identified here by a trigger
+// id rather than a raw button code:
+//
+//   272..287        a real mouse button, bound as mouse:<code>
+//   KEY_BASE + kc   a keyboard key from the mouse, bound as code:<kc>
+//
+// Keeping both in one integer space means everything downstream — places,
+// bindings, the diagram — keys off one id and needs no second code path.
+var KEY_BASE = 0x1000
+
+// xkb keycodes are evdev codes plus 8.
+var XKB_OFFSET = 8
+
+function isKeyTrigger(id) { return id >= KEY_BASE }
+function keycodeOf(id) { return id - KEY_BASE }
+function keyTrigger(xkbCode) { return KEY_BASE + xkbCode }
+function evdevOf(id) { return keycodeOf(id) - XKB_OFFSET }
+
+// What Hyprland's bind takes.
+function triggerBind(id) {
+  return isKeyTrigger(id) ? "code:" + keycodeOf(id) : "mouse:" + id
+}
+
+// Enough evdev key names to label a remapped mouse button usefully.
+var KEY_NAMES = {
+  1: "Esc", 14: "Backspace", 15: "Tab", 28: "Enter", 29: "Left Ctrl",
+  42: "Left Shift", 54: "Right Shift", 56: "Left Alt", 57: "Space",
+  97: "Right Ctrl", 100: "Right Alt", 125: "Left Meta", 126: "Right Meta",
+  103: "Up", 105: "Left", 106: "Right", 108: "Down",
+  104: "Page Up", 109: "Page Down", 102: "Home", 107: "End",
+  110: "Insert", 111: "Delete", 1: "Esc"
+}
+var _digits = "1234567890"
+for (var _d = 0; _d < _digits.length; _d++) KEY_NAMES[2 + _d] = _digits.charAt(_d)
+var _rows = [
+  [16, "qwertyuiop"],
+  [30, "asdfghjkl"],
+  [44, "zxcvbnm"]
+]
+for (var _r = 0; _r < _rows.length; _r++) {
+  for (var _i = 0; _i < _rows[_r][1].length; _i++) {
+    KEY_NAMES[_rows[_r][0] + _i] = _rows[_r][1].charAt(_i).toUpperCase()
+  }
+}
+for (var _f = 0; _f < 12; _f++) KEY_NAMES[59 + _f] = "F" + (_f + 1)
+
 function buttonName(code) {
+  if (isKeyTrigger(code)) {
+    var evdev = evdevOf(code)
+    return KEY_NAMES[evdev] ? "Key " + KEY_NAMES[evdev] : "Key " + evdev
+  }
   return BUTTON_NAMES[code] || ("BTN_" + code)
 }
 
 function defaultRole(code) {
+  if (isKeyTrigger(code)) return buttonName(code)
   return BUTTON_DEFAULTS[code] || "Extra button"
 }
 
@@ -191,13 +252,25 @@ function findHyprName(procName, hyprMice) {
 
 // hyprctl devices -j
 function parseHyprDevices(json) {
+  return hyprNames(json, "mice")
+}
+
+// The same physical mouse shows up a second time as a keyboard when it can
+// send keystrokes. That entry has its own name — "logitech-g-pro-" beside
+// the pointer's "logitech-g-pro--1" — and it is the device a key bind has
+// to be scoped to.
+function parseHyprKeyboards(json) {
+  return hyprNames(json, "keyboards")
+}
+
+function hyprNames(json, section) {
   var data = json
   if (typeof data === "string") {
     try { data = JSON.parse(data) } catch (e) { return [] }
   }
-  var mice = (data && data.mice) || []
+  var list = (data && data[section]) || []
   var out = []
-  for (var i = 0; i < mice.length; i++) if (mice[i] && mice[i].name) out.push(mice[i].name)
+  for (var i = 0; i < list.length; i++) if (list[i] && list[i].name) out.push(list[i].name)
   return out
 }
 
@@ -280,6 +353,7 @@ function batteryLabel(battery) {
 function discover(procText, hyprJson, profiles, learned, batteries) {
   var records = parseProcDevices(procText)
   var hyprMice = parseHyprDevices(hyprJson)
+  var hyprKeyboards = parseHyprKeyboards(hyprJson)
   var out = []
 
   for (var i = 0; i < records.length; i++) {
@@ -325,6 +399,9 @@ function discover(procText, hyprJson, profiles, learned, batteries) {
       vendor: real.vendor,
       product: real.product,
       hyprName: findHyprName(record.name, hyprMice),
+      // Empty for a mouse that sends no keystrokes; key triggers are
+      // refused rather than bound globally when this is missing.
+      hyprKbdName: findHyprName(record.name, hyprKeyboards),
       procName: record.name,
       profileId: profile ? profile.id : "",
       multiplexed: multiplexed,
@@ -408,6 +485,13 @@ if (typeof module !== "undefined") {
     namesMatch: namesMatch,
     findHyprName: findHyprName,
     parseHyprDevices: parseHyprDevices,
+    parseHyprKeyboards: parseHyprKeyboards,
+    KEY_BASE: KEY_BASE,
+    isKeyTrigger: isKeyTrigger,
+    keycodeOf: keycodeOf,
+    keyTrigger: keyTrigger,
+    evdevOf: evdevOf,
+    triggerBind: triggerBind,
     discover: discover,
     deviceKey: deviceKey,
     describeButtons: describeButtons,

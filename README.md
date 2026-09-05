@@ -76,23 +76,43 @@ is matched to the mouse by sysfs path rather than by name, so it stays correct
 when two of the same model are paired to one receiver. Wired mice simply have
 no battery section.
 
-## When a button will not map
+## Buttons that type instead of clicking
 
-Some mice send a **keyboard keystroke** instead of a mouse button — that is
-what a Logitech onboard profile does when a button is assigned a keystroke or
-a G-shift macro. Hyprland cannot bind that as `mouse:<n>`, because it is not
-a mouse button by the time it reaches the compositor.
+Plenty of mouse buttons never send a mouse button at all. A Logitech onboard
+profile that assigns a button a keystroke or a G-shift macro makes it arrive
+as a **keyboard key**, from the receiver's keyboard interface rather than its
+pointer one. A G Pro Wireless can easily have one thumb button sending `2` and
+the other sending `Left Ctrl`.
 
-To find out what a button really sends:
+MouseMap handles these. The same physical mouse appears in Hyprland a second
+time as a keyboard, with its own device name, so the key can be bound scoped
+to *that* device — the mouse and nothing else. Your real keyboard keeps
+working normally, and the button stops typing because the compositor now
+consumes it.
+
+This is why per-device scoping is not optional for such a button: binding a
+bare `2` or `Ctrl` globally would swallow that key everywhere and break
+typing. Generation refuses to emit one unscoped, and says so in the panel
+rather than doing it anyway.
+
+Detection covers them too — the guided pass watches the mouse's keyboard
+device alongside its buttons, which is only safe because every one of those
+probe binds is scoped to the mouse.
+
+If you would rather have real mouse buttons, reassign them in the mouse's
+onboard profile with G HUB or `piper`/`ratbagd`. Be aware that this writes to
+the mouse, so unlike everything else here it *does* follow the device to
+other machines.
+
+To see exactly what each button emits:
 
 ```bash
-sudo ./scripts/mousemap-sniff
+sudo ./scripts/mousemap-sniff             # with a terminal
+pkexec ./scripts/mousemap-sniff --seconds 30   # without one
 ```
 
 It reads the evdev stream directly (root-only, read-only) and prints what
-every press emits, flagging any button that is sending a keystroke. Reassign
-those to plain buttons in the mouse's onboard profile — G HUB, or
-`piper`/`ratbagd` on Linux — and they will appear in the panel.
+every press emits, flagging any button that is sending a keystroke.
 
 ## How it works
 

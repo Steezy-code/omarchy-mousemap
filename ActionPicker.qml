@@ -46,6 +46,31 @@ Item {
       }
     }
 
+    // A button whose onboard profile makes it type something is bound as a
+    // key rather than a mouse button. Worth saying, because it explains why
+    // the button stopped typing and why the binding is mouse-only.
+    Rectangle {
+      Layout.fillWidth: true
+      visible: root.meta && root.meta.isKey === true
+      radius: Style.cornerRadius > 0 ? Style.cornerRadius : 4
+      color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.10)
+      border.color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.35)
+      border.width: 1
+      implicitHeight: keyNote.implicitHeight + Style.space(4)
+
+      Text {
+        id: keyNote
+        anchors.fill: parent
+        anchors.margins: Style.space(2)
+        text: "This button types a keystroke rather than sending a mouse button. "
+            + "MouseMap catches it from this mouse only — your keyboard is unaffected."
+        wrapMode: Text.WordWrap
+        color: Color.accent
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+    }
+
     // Binding left or right click takes away the ability to click, which
     // includes the ability to undo it here. Say so before they do it.
     Rectangle {

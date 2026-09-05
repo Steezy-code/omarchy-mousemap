@@ -16,14 +16,19 @@ normal desktop, so run it with sudo:
 
     sudo ./scripts/mousemap-sniff
 
+With no controlling terminal — run from an agent, an editor, or anywhere
+sudo cannot prompt — use polkit and a fixed run instead of Ctrl-C:
+
+    pkexec ./scripts/mousemap-sniff --seconds 30
+
 Read-only: it opens the device, prints what arrives, and never writes.
 """
 
-import glob
+import argparse
 import os
 import re
-import struct
 import select
+import struct
 import sys
 import time
 
@@ -85,13 +90,24 @@ def mice():
 
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Show what every button on a mouse actually emits.")
+    parser.add_argument(
+        "--seconds", type=float, default=0,
+        help="stop after this many seconds instead of waiting for Ctrl-C; "
+             "use this when there is no terminal to interrupt from")
+    args = parser.parse_args()
+
     devices = mice()
     if not devices:
         sys.exit("no pointer devices found")
 
     if os.geteuid() != 0:
         print("This needs to read /dev/input/event*, which is root-only.")
-        print("Re-run it as:  sudo %s" % " ".join(sys.argv))
+        print()
+        print("With a terminal:   sudo %s" % " ".join(sys.argv))
+        print("Without one:       pkexec %s --seconds 30"
+              % os.path.abspath(sys.argv[0]))
         print()
         print("Devices it would watch:")
         for name, path in devices:
@@ -112,13 +128,21 @@ def main():
     for _fd, (name, path) in handles.items():
         print("  %-34s %s" % (name, path))
     print()
-    print("Press every button on the mouse, one at a time.")
-    print("Ctrl-C when you are done.")
+    if args.seconds > 0:
+        print("Press every button on the mouse, one at a time.")
+        print("Listening for %g seconds..." % args.seconds)
+    else:
+        print("Press every button on the mouse, one at a time.")
+        print("Ctrl-C when you are done.")
     print()
+    sys.stdout.flush()
 
+    deadline = time.monotonic() + args.seconds if args.seconds > 0 else None
     seen = {}
     try:
         while True:
+            if deadline is not None and time.monotonic() >= deadline:
+                break
             ready, _, _ = select.select(list(handles), [], [], 0.5)
             for fd in ready:
                 name, _path = handles[fd]
@@ -136,12 +160,12 @@ def main():
                     else:
                         label = KEY_NAMES.get(code, "KEY_%d" % code)
                         kind = "KEYBOARD key"
-                        hint = "sent as a keystroke, not a mouse button"
+                        hint = "sent as a keystroke"
                     key = (name, code)
                     if key not in seen:
                         seen[key] = (label, kind, hint)
                         print("  %-14s %-16s %-22s %s" % (kind, label, hint, name))
-                    sys.stdout.flush()
+                        sys.stdout.flush()
     except KeyboardInterrupt:
         pass
 
@@ -151,8 +175,8 @@ def main():
         print("Nothing was pressed.")
         return
 
-    buttons = sorted(c for (_n, c) in seen if c >= 0x110)
-    keys = sorted(c for (_n, c) in seen if c < 0x110)
+    buttons = sorted(set(c for (_n, c) in seen if c >= 0x110))
+    keys = sorted(set(c for (_n, c) in seen if c < 0x110))
 
     print("Mappable mouse buttons: %s" % (
         ", ".join("%d (%s)" % (c, BTN_NAMES.get(c, "?")) for c in buttons) or "none"))

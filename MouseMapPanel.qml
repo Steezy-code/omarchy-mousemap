@@ -515,7 +515,11 @@ Item {
     learnRev++
     learnedCodes = []
     learnTimer.start()
-    learnProc.command = [root.helper, "learn", "arm"]
+    // The keyboard name lets the probe also watch for buttons that send
+    // keystrokes; without it those buttons are invisible to detection.
+    learnProc.command = device && device.hyprKbdName
+      ? [root.helper, "learn", "arm", device.hyprKbdName]
+      : [root.helper, "learn", "arm"]
     learnProc.running = true
     say("Press each button as it is named. Left and right click are left alone.")
   }
@@ -1150,11 +1154,12 @@ Item {
       if (placed[i].code === code) {
         return {
           code: code, role: placed[i].role, side: placed[i].side,
-          protected: Devices.isProtected(code), name: Devices.buttonName(code)
+          protected: Devices.isProtected(code), name: Devices.buttonName(code),
+          isKey: Devices.isKeyTrigger(code)
         }
       }
     }
     return { code: code, role: Devices.defaultRole(code), protected: Devices.isProtected(code),
-             name: Devices.buttonName(code) }
+             name: Devices.buttonName(code), isKey: Devices.isKeyTrigger(code) }
   }
 }
