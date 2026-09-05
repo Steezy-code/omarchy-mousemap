@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "steezy.mousemap",
+  "id": "io.github.steezy-code.mousemap",
   "name": "MouseMap",
-  "version": "1.0.0",
-  "author": "steezy",
+  "version": "1.1.0",
+  "author": "Luke Wilder",
   "license": "MIT",
-  "description": "See every button on your mouse laid out on a diagram, with leader lines to what each one does, and rebind them to any shortcut. Reads whichever mouse is plugged in and redraws itself to match.",
+  "description": "See every button on your mouse laid out on a diagram, with leader lines to what each one does, and rebind them to any shortcut. Switch between named DPI presets, and put one on a thumb button. Reads whichever mouse is plugged in and redraws itself to match. Nothing is ever written to the mouse.",
   "kinds": ["panel", "bar-widget"],
   "entryPoints": {
     "panel": "MouseMapPanel.qml",

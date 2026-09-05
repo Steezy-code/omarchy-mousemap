@@ -9,6 +9,7 @@ import "Profiles.js" as Profiles
 import "Leaders.js" as Leaders
 import "Actions.js" as Actions
 import "Config.js" as Config
+import "Dpi.js" as Dpi
 
 // MouseMap — see what every button on your mouse does, and change it.
 //
@@ -20,7 +21,7 @@ import "Config.js" as Config
 Item {
   id: root
 
-  readonly property string pluginId: "steezy.mousemap"
+  readonly property string pluginId: "io.github.steezy-code.mousemap"
   property var shell: null
   property string sourceDir: ""
   property bool closingFromHost: false
@@ -124,7 +125,222 @@ Item {
   }
 
   function resolvedFor(code) {
-    return Actions.resolve(bindingFor(code))
+    // The device's presets, so a DPI button's chip reads "Sniper · 400
+    // DPI" rather than the catalogue's generic row title — and so a button
+    // aimed at a preset that has since been deleted shows as unmapped here
+    // instead of only being reported at Apply. No slot: this is the panel
+    // asking what a binding is called, not the generator asking what to
+    // emit for it.
+    configRev
+    return Actions.resolve(bindingFor(code), { dpi: dpiOn ? dpiConfig : null })
+  }
+
+  // ------------------------------------------------------------ dpi
+  //
+  // Pointer speed for this mouse, in DPI. See Dpi.js for why a compositor
+  // sensitivity can be talked about in DPI at all, and why presets pin the
+  // flat acceleration profile to make that true.
+
+  property bool dpiOpen: false
+
+  // Which preset is applied right now, per Hyprland device name, read back
+  // from the runtime on open. It can differ from the config when a DPI
+  // button has been pressed since the last Apply, and showing the config's
+  // idea instead would be showing something that is not on screen.
+  property var dpiLive: ({})
+
+  // The preset the user is currently editing in the sidebar. Not persisted:
+  // it is a cursor, not a setting.
+  property int dpiEditing: -1
+
+  readonly property var dpiConfig: {
+    configRev
+    return Dpi.normalize(Config.deviceEntry(config, deviceKey).dpi)
+  }
+
+  readonly property bool dpiOn: dpiConfig.enabled && dpiConfig.presets.length > 0
+
+  // What the pointer is actually doing, which is the runtime's answer when
+  // it has one and the config's otherwise.
+  readonly property int dpiCurrent: {
+    configRev
+    var live = device && device.hyprName ? dpiLive[device.hyprName] : undefined
+    if (live !== undefined && live >= 0 && live < dpiConfig.presets.length) return live
+    return dpiConfig.active
+  }
+
+  readonly property var dpiPreset: dpiOn && dpiCurrent < dpiConfig.presets.length
+    ? dpiConfig.presets[dpiCurrent] : null
+
+  // The sidebar has one slot, so opening DPI puts the button inspector
+  // away rather than fighting it for the space.
+  function openDpi() {
+    selectedCode = -1
+    capturing = false
+    dpiOpen = true
+  }
+
+  // Every DPI edit goes through here and hands the stored value straight
+  // back, so callers preview from what they just wrote rather than reading
+  // it out of a property binding they have only just invalidated.
+  function writeDpi(next) {
+    if (!deviceKey) return next
+    if (!config.devices[deviceKey]) config.devices[deviceKey] = Config.blankEntry()
+    config.devices[deviceKey].dpi = next
+    configRev++
+    dirty = true
+    return next
+  }
+
+  function setDpiEnabled(on) {
+    if (on) {
+      dpiEditing = -1
+      previewDpi(Dpi.activePreset(writeDpi(Dpi.enable(dpiConfig))))
+      say("")
+      return
+    }
+    // Presets and the chosen one are kept, so turning this back on
+    // restores what was there rather than reseeding from scratch.
+    writeDpi(Dpi.normalize({
+      base: dpiConfig.base, presets: dpiConfig.presets, active: dpiConfig.active
+    }))
+    say("Pointer speed handed back to Hyprland on the next Apply.")
+  }
+
+  // `preview` is false while a slider is still moving. Previewing spawns a
+  // process, and doing that on every frame of a drag would queue up more
+  // of them than the compositor ever gets to run; the release previews.
+  function setDpiBase(value, preview) {
+    var next = writeDpi(Dpi.withBase(dpiConfig, value))
+    if (preview) previewDpi(next.presets[dpiCurrent])
+  }
+
+  function selectDpiPreset(index) {
+    var next = Dpi.normalize(dpiConfig)
+    if (index < 0 || index >= next.presets.length) return
+    next.active = index
+    writeDpi(next)
+    // The runtime's own idea has to move too, or the header would keep
+    // showing the preset a DPI button last selected.
+    if (device && device.hyprName) {
+      var live = ({})
+      for (var name in dpiLive) live[name] = dpiLive[name]
+      live[device.hyprName] = index
+      dpiLive = live
+    }
+    previewDpi(next.presets[index])
+  }
+
+  function editDpiPreset(index, patch, preview) {
+    var next = writeDpi(Dpi.setPreset(dpiConfig, index, patch))
+    if (preview && index === dpiCurrent) previewDpi(next.presets[index])
+  }
+
+  function addDpiPreset() {
+    var next = writeDpi(Dpi.addPreset(dpiConfig))
+    dpiEditing = next.presets.length - 1
+    selectDpiPreset(dpiEditing)
+  }
+
+  function removeDpiPreset(index) {
+    var result = Dpi.removePreset(dpiConfig, index)
+    if (!result.remap) return
+    writeDpi(result.dpi)
+
+    // A button is bound to a preset by index, so removing one moves the
+    // ground under every binding that pointed past it. Left alone, a
+    // sniper button would quietly start switching to a different preset —
+    // the worst kind of change, because nothing about it looks different.
+    //
+    // A button that pointed at the *removed* preset is retargeted to
+    // whatever slid into its place rather than being unbound: silently
+    // deleting somebody's binding is no better than silently moving it,
+    // and this way there is something to see and correct.
+    var entry = Config.deviceEntry(config, deviceKey)
+    var last = Math.max(0, result.dpi.presets.length - 1)
+    var moved = 0
+    var orphaned = 0
+    for (var code in entry.bindings) {
+      if (!Object.prototype.hasOwnProperty.call(entry.bindings, code)) continue
+      var binding = entry.bindings[code]
+      var spec = Actions.byId(binding.action)
+      if (!spec || spec.kind !== "dpi" || !spec.custom) continue
+      var target = result.remap[binding.preset]
+      if (target === undefined) continue
+      if (target < 0) { binding.preset = Math.min(index, last); orphaned++ }
+      else if (target !== binding.preset) { binding.preset = target; moved++ }
+    }
+
+    dpiEditing = -1
+    configRev++
+    previewDpi(Dpi.activePreset(result.dpi))
+
+    if (orphaned > 0) {
+      say(orphaned + " button" + (orphaned === 1 ? "" : "s") +
+          " pointed at that preset and now point at the next one.")
+    } else if (moved > 0) {
+      say("")
+    }
+  }
+
+  // Apply one preset to the running compositor without writing anything,
+  // so dragging the slider is something you can feel. Nothing is persisted
+  // until Apply, which is the same promise the rest of the panel makes.
+  function previewDpi(preset) {
+    if (!preset || !device || !device.hyprName || dpiPreviewProc.running) return
+    var sensitivity = Dpi.sensitivityFor(preset.dpi, dpiConfig.base)
+    if (sensitivity === null) return
+    dpiPreviewProc.payload = JSON.stringify({ device: device.hyprName, sensitivity: sensitivity })
+    dpiPreviewProc.stdinEnabled = true
+    dpiPreviewProc.running = true
+  }
+
+  Process {
+    id: dpiPreviewProc
+    property string payload: ""
+    command: [root.helper, "dpi", "preview"]
+    stdinEnabled: false
+    onStarted: {
+      dpiPreviewProc.write(dpiPreviewProc.payload)
+      dpiPreviewProc.stdinEnabled = false
+    }
+  }
+
+  // Which preset the runtime is actually on, watched rather than polled.
+  //
+  // Pressing a DPI button on the mouse while this panel is open has to
+  // move the readout in the header — otherwise the panel is showing a
+  // number that is no longer true, which is worse than showing none.
+  // The generated Lua and the helper both write this file, so watching it
+  // catches a switch from either.
+  FileView {
+    id: dpiActiveFile
+    path: root.dpiActivePath
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.readDpiActive(text())
+    // `text()` is stale inside the change signal itself, so both paths go
+    // back through onLoaded with fresh content.
+    onFileChanged: reload()
+    onLoadFailed: root.dpiLive = ({})
+  }
+
+  // slot -> preset index, keyed back to the Hyprland device name through
+  // the same slot table the generator numbered the file with.
+  function readDpiActive(text) {
+    var slots = Config.dpiSlots(devices, config, Dpi).slots
+    var live = ({})
+    var lines = String(text || "").split("\n")
+    for (var i = 0; i < lines.length; i++) {
+      var parts = lines[i].split("\t")
+      if (parts.length !== 2) continue
+      var slot = parseInt(parts[0], 10)
+      var index = parseInt(parts[1], 10)
+      if (!isFinite(slot) || !isFinite(index)) continue
+      var resolved = slots[slot - 1]
+      if (resolved) live[resolved.name] = index - 1
+    }
+    dpiLive = live
   }
 
   function isMapped(code) {
@@ -265,7 +481,11 @@ Item {
       action: actionId,
       mods: current.mods || [],
       key: current.key || "",
-      command: current.command || ""
+      command: current.command || "",
+      // A newly chosen DPI action points at the preset that is live, which
+      // is the one the user just felt, rather than at whichever preset an
+      // unrelated earlier binding happened to name.
+      preset: current.preset === undefined ? dpiCurrent : current.preset
     }
     Config.setBinding(config, deviceKey, code, next)
     configRev++
@@ -273,10 +493,25 @@ Item {
     draftCommand = next.command
   }
 
+  // Which preset a "switch to a preset" or "hold to slow down" button aims
+  // at. Selecting it also previews it, so the choice is something you feel
+  // rather than a number you have to trust.
+  function setActionPreset(code, index) {
+    var current = bindingFor(code)
+    Config.setBinding(config, deviceKey, code, {
+      action: current.action, mods: current.mods || [], key: current.key || "",
+      command: current.command || "", preset: index
+    })
+    configRev++
+    dirty = true
+    previewDpi(dpiConfig.presets[index])
+  }
+
   function setChord(code, mods, key) {
     var current = bindingFor(code)
     Config.setBinding(config, deviceKey, code, {
-      action: "custom-key", mods: mods, key: key, command: current.command || ""
+      action: "custom-key", mods: mods, key: key, command: current.command || "",
+      preset: current.preset || 0
     })
     configRev++
     dirty = true
@@ -286,7 +521,7 @@ Item {
     var current = bindingFor(code)
     Config.setBinding(config, deviceKey, code, {
       action: "custom-command", mods: current.mods || [], key: current.key || "",
-      command: command
+      command: command, preset: current.preset || 0
     })
     configRev++
     dirty = true
@@ -388,7 +623,16 @@ Item {
 
   readonly property string helper: sourceDir !== ""
     ? sourceDir + "/scripts/mousemap"
-    : Quickshell.env("HOME") + "/.config/omarchy/plugins/steezy.mousemap/scripts/mousemap"
+    : Quickshell.env("HOME") + "/.config/omarchy/plugins/" + pluginId + "/scripts/mousemap"
+
+  // Every path this panel reads or writes, so a change to one of them is a
+  // change to one line rather than a hunt through the process list.
+  readonly property string stateDir: Quickshell.env("HOME") + "/.local/state/omarchy-mousemap"
+  readonly property string configPath: Quickshell.env("HOME") + "/.config/omarchy/mousemap.json"
+  readonly property string hyprPath: Quickshell.env("HOME") + "/.config/hypr/bindings.lua"
+  readonly property string luaPath: stateDir + "/bindings.lua"
+  readonly property string dpiPath: stateDir + "/dpi.json"
+  readonly property string dpiActivePath: stateDir + "/dpi-active"
 
   function applyDetect(raw) {
     var payload
@@ -431,7 +675,7 @@ Item {
   Process {
     id: setupReadProc
     property string buffer: ""
-    command: [root.helper, "read", Quickshell.env("HOME") + "/.config/hypr/bindings.lua"]
+    command: [root.helper, "read", root.hyprPath]
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: setupReadProc.buffer = text }
     onExited: {
       root.hookPresent = Config.hasHook(setupReadProc.buffer)
@@ -450,10 +694,10 @@ Item {
   Process {
     id: setupLuaProc
     property string buffer: ""
-    command: [root.helper, "read", Quickshell.env("HOME") + "/.local/state/omarchy-mousemap/bindings.lua"]
+    command: [root.helper, "read", root.luaPath]
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: setupLuaProc.buffer = text }
     onExited: {
-      var expected = Config.generateLua(root.devices, root.config, Actions).text
+      var expected = root.generate().text
       if (root.hookPresent && setupLuaProc.buffer === expected) return
       root.settingUp = true
       root.applyNow()
@@ -464,31 +708,46 @@ Item {
   Process {
     id: readConfigProc
     property string buffer: ""
-    command: [root.helper, "read", Quickshell.env("HOME") + "/.config/omarchy/mousemap.json"]
+    command: [root.helper, "read", root.configPath]
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: readConfigProc.buffer = text }
     onExited: {
       var parsed = null
       if (readConfigProc.buffer.trim() !== "") {
         try { parsed = JSON.parse(readConfigProc.buffer) } catch (e) { parsed = null }
       }
-      root.config = Config.normalize(parsed)
+      root.config = Config.normalize(parsed, Dpi)
       root.configRev++
       root.refresh()
     }
   }
 
-  // Writing is a small pipeline: config JSON, then the generated Lua, then
-  // the loader line in the user's bindings.lua, then a reload. Each step
-  // only runs if the one before it succeeded, so a failure never leaves
-  // Hyprland pointed at a file that was not written.
+  // Writing is a small pipeline: config JSON, the generated Lua, the two
+  // DPI files it reads, then the loader line in the user's bindings.lua,
+  // then a reload. Each step only runs if the one before it succeeded, so
+  // a failure never leaves Hyprland pointed at a file that was not written.
   property string pendingLua: ""
+  property string pendingDpi: ""
+  property string pendingDpiActive: ""
   property string pendingHypr: ""
   property int applyStage: 0
 
+  // One call, because the setup check and Apply must agree byte for byte
+  // about what this version would generate — that comparison is how a
+  // stale generated file is noticed at all.
+  function generate() {
+    return Config.generateLua(devices, config, Actions, Dpi, helper)
+  }
+
   function applyNow() {
     if (!device) return
-    var generated = Config.generateLua(devices, config, Actions)
+    var generated = generate()
     pendingLua = generated.text
+    pendingDpi = JSON.stringify(Dpi.sidecar(generated.dpi), null, 2) + "\n"
+    // Apply is authoritative about which preset is selected. Without
+    // writing this the generated file would set the preset the panel asked
+    // for and then read the preset a DPI button last chose, and the panel
+    // would appear to do nothing at all.
+    pendingDpiActive = Dpi.activeFile(generated.dpi)
 
     if (generated.skipped.length > 0) {
       say(generated.skipped[0].reason, true)
@@ -496,8 +755,7 @@ Item {
 
     busy = true
     applyStage = 1
-    writeFile(Quickshell.env("HOME") + "/.config/omarchy/mousemap.json",
-              JSON.stringify(config, null, 2) + "\n")
+    writeFile(configPath, JSON.stringify(config, null, 2) + "\n")
   }
 
   // stdin has to be armed before the process starts, then closed from
@@ -531,18 +789,25 @@ Item {
     }
   }
 
-  // Stages, in order: 1 config written -> 2 lua written -> 3 backup taken
-  // -> 4 bindings.lua read and hooked -> 5 reload. Each step is only
-  // reached from the success path of the one before it.
+  // Stages, in order: 1 config written -> 2 lua written -> 3 dpi.json
+  // written -> 4 dpi-active written -> 5 backup taken -> 6 bindings.lua
+  // read and hooked -> 7 reload. Each step is only reached from the
+  // success path of the one before it.
   function advanceApply() {
     if (applyStage === 1) {
       applyStage = 2
-      writeFile(Quickshell.env("HOME") + "/.local/state/omarchy-mousemap/bindings.lua", pendingLua)
+      writeFile(luaPath, pendingLua)
     } else if (applyStage === 2) {
       applyStage = 3
-      backupProc.running = true
+      writeFile(dpiPath, pendingDpi)
+    } else if (applyStage === 3) {
+      applyStage = 4
+      writeFile(dpiActivePath, pendingDpiActive)
     } else if (applyStage === 4) {
       applyStage = 5
+      backupProc.running = true
+    } else if (applyStage === 6) {
+      applyStage = 7
       reloadProc.running = true
     }
   }
@@ -556,19 +821,19 @@ Item {
   Process {
     id: readHyprProc
     property string buffer: ""
-    command: [root.helper, "read", Quickshell.env("HOME") + "/.config/hypr/bindings.lua"]
+    command: [root.helper, "read", root.hyprPath]
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: readHyprProc.buffer = text }
     onExited: {
       var current = readHyprProc.buffer
       var next = Config.withHook(current, "/.local/state/omarchy-mousemap/bindings.lua")
-      root.applyStage = 4
+      root.applyStage = 6
       if (next === current) {
         // Already hooked, or an unclosed marker we refuse to guess at:
         // nothing to write, go straight to the reload.
         root.advanceApply()
       } else {
         root.pendingHypr = next
-        root.writeFile(Quickshell.env("HOME") + "/.config/hypr/bindings.lua", next)
+        root.writeFile(root.hyprPath, next)
       }
     }
   }
@@ -883,6 +1148,7 @@ Item {
         if (event.key === Qt.Key_Escape) {
           if (root.dragging) root.cancelDrag()
           else if (root.selectedCode >= 0) root.selectedCode = -1
+          else if (root.dpiOpen) root.dpiOpen = false
           else root.requestClose()
           event.accepted = true
         }
@@ -965,6 +1231,34 @@ Item {
                 font.family: Style.font.family
                 font.pixelSize: Style.font.bodySmall
                 font.weight: Font.DemiBold
+              }
+
+              // The live DPI, which changes under you when a DPI button is
+              // pressed, so it belongs beside the mouse's name rather than
+              // buried in the sidebar that sets it.
+              Text {
+                visible: root.dpiPreset !== null
+                text: "·"
+                color: Color.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.bodySmall
+              }
+              Text {
+                visible: root.dpiPreset !== null
+                // nf-md-mouse, the same glyph the OSD draws on a switch.
+                text: root.dpiPreset
+                  ? "\uf037d  " + root.dpiPreset.dpi + " DPI · " + root.dpiPreset.name : ""
+                color: Color.accent
+                font.family: Style.font.family
+                font.pixelSize: Style.font.bodySmall
+                font.weight: Font.DemiBold
+
+                MouseArea {
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.openDpi()
+                }
               }
             }
           }
@@ -1379,6 +1673,23 @@ Item {
             }
           }
 
+          // -------------------------------------------- dpi
+          Rectangle {
+            Layout.preferredWidth: 340
+            Layout.fillHeight: true
+            visible: root.dpiOpen && !root.learning && root.selectedCode < 0
+            radius: Style.cornerRadius > 0 ? Style.cornerRadius : 6
+            color: Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.035)
+            border.width: 1
+            border.color: Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.12)
+
+            DpiPanel {
+              anchors.fill: parent
+              anchors.margins: Style.space(4)
+              panel: root
+            }
+          }
+
           // -------------------------------------------- inspector
           Rectangle {
             Layout.preferredWidth: 320
@@ -1418,6 +1729,14 @@ Item {
             elide: Text.ElideRight
           }
 
+          Ui.Button {
+            text: "DPI"
+            bordered: true
+            selected: root.dpiOpen
+            enabled: !root.learning
+            tooltipText: "Named pointer speeds you can switch between, and a button to switch them with."
+            onClicked: root.dpiOpen ? root.dpiOpen = false : root.openDpi()
+          }
           Ui.Button {
             text: root.learning ? "Cancel detect" : "Detect buttons"
             bordered: true
@@ -1463,6 +1782,8 @@ Item {
     selectedCode = code
     draftCommand = bindingFor(code).command || ""
     capturing = false
+    // One sidebar, one occupant.
+    dpiOpen = false
   }
 
   // Role and protection flags for a code on the current device. The role

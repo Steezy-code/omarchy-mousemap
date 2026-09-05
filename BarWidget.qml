@@ -6,7 +6,7 @@ import qs.Ui
 // rather than a bar popup, so this only has to summon it.
 BarWidget {
   id: root
-  moduleName: "steezy.mousemap"
+  moduleName: "io.github.steezy-code.mousemap"
 
   implicitWidth: Math.max(Style.bar.iconSlot, glyph.implicitWidth + Style.space(3))
   implicitHeight: Style.bar.iconSlot
@@ -32,6 +32,6 @@ BarWidget {
     id: area
     anchors.fill: parent
     hoverEnabled: true
-    onClicked: if (root.bar) root.bar.run("omarchy-shell shell toggle steezy.mousemap")
+    onClicked: if (root.bar) root.bar.run("omarchy-shell shell toggle io.github.steezy-code.mousemap")
   }
 }

@@ -5,6 +5,7 @@ import qs.Ui as Ui
 import "Actions.js" as Actions
 import "Devices.js" as Devices
 import "Profiles.js" as Profiles
+import "Dpi.js" as Dpi
 
 // What the selected button should do. Reads and writes through the panel
 // rather than holding its own copy, so the diagram and this list can never
@@ -37,6 +38,17 @@ Item {
   // default — otherwise a button nobody has moved shows no current place
   // at all, and every chip looks equally unchosen.
   readonly property string currentPlace: panel && code >= 0 ? panel.placeOf(code) : ""
+
+  // A DPI action needs presets to point at. Rather than hiding the rows
+  // when there are none — which leaves someone hunting for a feature the
+  // README told them about — they stay, and picking one says what is
+  // missing and offers to fix it.
+  readonly property var actionSpec: Actions.byId(currentAction)
+  readonly property bool isDpi: actionSpec !== null && actionSpec.kind === "dpi"
+  readonly property bool needsPreset: isDpi && actionSpec.custom === true
+  readonly property bool dpiReady: panel ? panel.dpiOn : false
+  readonly property var dpiPresets: panel ? panel.dpiConfig.presets : []
+  readonly property int chosenPreset: binding && binding.preset !== undefined ? binding.preset : 0
 
   onCodeChanged: placesOpen = false
 
@@ -296,6 +308,101 @@ Item {
         }
 
         Item { Layout.preferredHeight: Style.space(3) }
+      }
+    }
+
+    // ---------------------------------------------------------- dpi
+    //
+    // Which preset the button aims at. Clicking one applies it, so the
+    // choice is made by feel rather than by reading a number.
+    ColumnLayout {
+      Layout.fillWidth: true
+      visible: root.needsPreset && root.dpiReady
+      spacing: Style.space(1)
+
+      Ui.PanelSectionHeader {
+        Layout.fillWidth: true
+        text: "WHICH PRESET"
+      }
+
+      Flow {
+        Layout.fillWidth: true
+        spacing: Style.space(1)
+
+        Repeater {
+          model: { root.panel ? root.panel.configRev : 0; return root.dpiPresets }
+
+          delegate: Rectangle {
+            id: presetChip
+            required property var modelData
+            required property int index
+            readonly property bool chosen: root.chosenPreset === index
+
+            width: presetLabel.implicitWidth + Style.space(4)
+            height: presetLabel.implicitHeight + Style.space(3)
+            radius: Style.cornerRadius > 0 ? Style.cornerRadius : 4
+            color: chosen ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.20)
+                          : (presetMouse.containsMouse
+                             ? Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.09)
+                             : Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.04))
+            border.width: 1
+            border.color: chosen ? Color.accent
+                                 : Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.14)
+
+            Text {
+              id: presetLabel
+              anchors.centerIn: parent
+              // Same shape the OSD draws on a switch, so the chip and the
+              // overlay that confirms the press read as the same thing.
+              text: presetChip.modelData.name + " · " + presetChip.modelData.dpi
+              color: presetChip.chosen ? Color.accent : Color.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+
+            MouseArea {
+              id: presetMouse
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.panel.setActionPreset(root.code, presetChip.index)
+            }
+          }
+        }
+      }
+    }
+
+    // A DPI action on a mouse with no presets would compile to nothing and
+    // be reported as skipped at Apply. Say so here instead, while there is
+    // still a button to press about it.
+    Rectangle {
+      Layout.fillWidth: true
+      visible: root.isDpi && !root.dpiReady
+      radius: Style.cornerRadius > 0 ? Style.cornerRadius : 4
+      color: Qt.rgba(Color.urgent.r, Color.urgent.g, Color.urgent.b, 0.10)
+      border.color: Qt.rgba(Color.urgent.r, Color.urgent.g, Color.urgent.b, 0.35)
+      border.width: 1
+      implicitHeight: dpiNote.implicitHeight + Style.space(4)
+
+      ColumnLayout {
+        id: dpiNote
+        anchors.fill: parent
+        anchors.margins: Style.space(2)
+        spacing: Style.space(2)
+
+        Text {
+          Layout.fillWidth: true
+          text: "This mouse has no DPI presets yet, so there is nothing for this button to switch between."
+          wrapMode: Text.WordWrap
+          color: Color.urgent
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+        Ui.Button {
+          text: "Set up presets"
+          bordered: true
+          onClicked: root.panel.openDpi()
+        }
       }
     }
 

@@ -2,7 +2,11 @@ const assert = require("assert")
 const A = require("../Actions.js")
 const C = require("../Config.js")
 const D = require("../Devices.js")
+const Dpi = require("../Dpi.js")
 const fs = require("fs")
+
+// The path the generated DPI binds call back into.
+const HELPER = "/home/somebody/.config/omarchy/plugins/x/scripts/mousemap"
 
 // ---------------------------------------------------------------- escaping
 
@@ -78,7 +82,7 @@ const dirty = {
     }
   }
 }
-const clean = C.normalize(dirty)
+const clean = C.normalize(dirty, Dpi)
 assert.deepStrictEqual(clean.devices["046d:4079:x"].learned, [272, 275, 276])
 assert.deepStrictEqual(Object.keys(clean.devices["046d:4079:x"].bindings).sort(), ["274", "275"])
 assert.deepStrictEqual(C.normalize(null), C.defaults())
@@ -106,7 +110,7 @@ const config = C.normalize({
     }
   }
 })
-const gen = C.generateLua(devices, config, A)
+const gen = C.generateLua(devices, config, A, Dpi, HELPER)
 assert.strictEqual(gen.binds, 5)
 assert.strictEqual(gen.skipped.length, 0)
 assert.ok(gen.text.includes('device = { inclusive = true, list = { "logitech-g-pro--1" } }'), "scoped")
@@ -118,7 +122,7 @@ assert.ok(gen.text.includes('pcall(hl.unbind, "mouse:275")'), "idempotent unbind
 
 // A device Hyprland cannot name cannot be scoped, and must be reported
 // rather than silently bound to every pointer on the system.
-const unnamed = C.generateLua([{ key: "046d:4079:x", label: "X", hyprName: "" }], config, A)
+const unnamed = C.generateLua([{ key: "046d:4079:x", label: "X", hyprName: "" }], config, A, Dpi, HELPER)
 assert.strictEqual(unnamed.binds, 0)
 assert.strictEqual(unnamed.skipped.length, 1)
 assert.ok(/cannot be scoped/.test(unnamed.skipped[0].reason))
@@ -135,7 +139,7 @@ const globalCfg = C.normalize({
     b: { bindings: { "275": { action: "copy" }, "276": { action: "paste" } } }
   }
 })
-const globalGen = C.generateLua(twoMice, globalCfg, A)
+const globalGen = C.generateLua(twoMice, globalCfg, A, Dpi, HELPER)
 assert.strictEqual(globalGen.binds, 2, "duplicate global code emitted once")
 assert.strictEqual(globalGen.skipped.length, 1)
 assert.ok(/already bound globally/.test(globalGen.skipped[0].reason))
@@ -279,7 +283,7 @@ console.log("key capture: all assertions passed")
     "every captured trigger can carry a binding")
 
   const emitted = C.generateLua(
-    [{ key: "d", label: "M", hyprName: "m", hyprKbdName: "m-kbd" }], round, A)
+    [{ key: "d", label: "M", hyprName: "m", hyprKbdName: "m-kbd" }], round, A, Dpi, HELPER)
   assert.strictEqual(emitted.binds, captured.length, "every captured trigger emits a bind")
   assert.ok(emitted.text.includes('hl.bind("code:11"'), "keystroke trigger emitted")
   assert.ok(emitted.text.includes('hl.bind("mouse:274"'), "mouse trigger emitted")
@@ -314,7 +318,7 @@ for (const id of [0, 0x10f, 0x120, 0xfff, C.KEY_BASE - 1, C.KEY_BASE + 256, NaN]
 // places, which reads as a mouse nobody ever detected.
 {
   const shape = Object.keys(C.blankEntry()).sort()
-  assert.deepStrictEqual(shape, ["bindings", "label", "layout", "learned"])
+  assert.deepStrictEqual(shape, ["bindings", "dpi", "label", "layout", "learned"])
   const config = C.defaults()
   C.setBinding(config, "new:device", 0x113, { action: "back", mods: [], key: "", command: "" })
   assert.deepStrictEqual(Object.keys(config.devices["new:device"]).sort(), shape)

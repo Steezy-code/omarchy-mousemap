@@ -2,13 +2,15 @@
 
 An Omarchy shell plugin that shows every button on your mouse on a diagram,
 with a leader line from each button to a label saying what it does — and lets
-you rebind any of them to a shortcut, a window action, or a command.
+you rebind any of them to a shortcut, a window action, or a command. It also
+gives the mouse named DPI presets you can switch between, including from a
+button on the mouse itself.
 
 The diagram is generated from whatever mouse is actually plugged in. A
 two-button travel mouse and a seven-button gaming mouse each draw as
 themselves, and the leaders land on the right places on the shell.
 
-![the panel](docs/panel.png)
+![the panel](preview.png)
 
 ## Nothing is written to the mouse
 
@@ -16,22 +18,59 @@ This is the important difference from Piper / libratbag, which is the usual
 answer to remapping a mouse on Linux. Piper flashes the mouse's **onboard
 memory**, so your remaps follow the device to every machine you plug it into.
 
-MouseMap never touches the hardware. Everything it does is a Hyprland
-keybinding on *this* machine, scoped to *this* device name. Plug the mouse
-into another computer and it behaves exactly as it did out of the box.
+MouseMap never touches the hardware. Everything it does is a Hyprland setting
+on *this* machine, scoped to *this* device name — a keybinding, or a pointer
+speed. Plug the mouse into another computer and it behaves exactly as it did
+out of the box.
 
 ## Install
 
 ```bash
-./install
-omarchy plugin enable steezy.mousemap
-omarchy-shell shell toggle steezy.mousemap
+omarchy plugin add https://github.com/Steezy-code/omarchy-mousemap --enable
 ```
 
-`install` copies into `~/.config/omarchy/plugins/steezy.mousemap`. It copies
-rather than symlinks on purpose: Quickshell watches the plugin tree for
-changes and does not follow a symlinked directory, so a symlinked install
-silently stops hot-reloading.
+That clones the repository into `~/.config/omarchy/plugins/` and enables it.
+Open the map from its bar icon, or:
+
+```bash
+omarchy-shell shell toggle io.github.steezy-code.mousemap
+```
+
+Nothing is changed outside the plugin folder until you press **Apply** for the
+first time. That step adds one `dofile` line to `~/.config/hypr/bindings.lua`,
+inside `-- BEGIN mousemap` markers, and takes a one-time backup of that file
+at `bindings.lua.mousemap.bak` before it does.
+
+To update later:
+
+```bash
+omarchy plugin update io.github.steezy-code.mousemap
+```
+
+### Requirements
+
+Omarchy 4 (Hyprland 0.56+ with the Lua config), which is where `hl.bind`,
+`hl.device`, the `device` bind option and `send_key_state` come from.
+
+No packages beyond what Omarchy already installs. The helper script uses
+`bash`, `python3` and `hyprctl`; the panel is Quickshell QML. Two of the
+built-in actions shell out to things Omarchy ships — `playerctl` for the media
+actions and `wpctl` for the volume ones — and *Toggle dictation* runs
+`voxtype`, which is optional. An action whose command is missing simply does
+nothing; nothing else is affected.
+
+### Developing on it
+
+```bash
+./install
+```
+
+`install` copies this checkout into
+`~/.config/omarchy/plugins/io.github.steezy-code.mousemap`. It copies rather
+than symlinks on purpose: Quickshell watches the plugin tree for changes and
+does not follow a symlinked directory, so a symlinked install silently stops
+hot-reloading. (The marketplace refuses symlinks inside a plugin folder for a
+better reason: a symlink in a trusted plugin directory can point anywhere.)
 
 Re-run `./install` after editing. QML components are cached once loaded, so
 changes to an already-open panel need `omarchy restart shell`.
@@ -41,6 +80,7 @@ changes to an already-open panel need `omarchy restart shell`.
 Click any button on the diagram, or its label, and pick what it should do.
 Nothing is live until you press **Apply**.
 
+- **Pointer** — next / previous DPI preset, jump to one, hold for one
 - **Navigate** — Back, Forward, tab switching, reload
 - **Edit** — copy, paste, cut, undo, redo, find
 - **Window** — close, fullscreen, float/tile, pin
@@ -52,6 +92,57 @@ Nothing is live until you press **Apply**.
 
 Left and right click are shown but flagged: binding them takes the click
 away everywhere, including in the panel that did it.
+
+## DPI presets
+
+Press **DPI** in the footer. Give the mouse a few named speeds — the defaults
+are a quarter, a half, and all of it — and switch between them by clicking, or
+by binding a button to **Next DPI preset**. A switch draws an on-screen
+overlay saying which one you landed on, and the choice survives a Hyprland
+reload.
+
+**Hold to slow down** is the sniper button: press and hold to drop to one
+preset, let go and spring back to the one you had. Both edges are bound, so
+there is nothing to toggle back.
+
+### What a "DPI" is here, exactly
+
+Hyprland hands a device's `sensitivity` to libinput as the pointer
+acceleration speed. Under the **flat** profile, libinput turns that into a
+constant factor:
+
+```
+factor = speed + 1        (libinput, filter-flat.c)
+```
+
+which is an exact linear multiplier from 0× to 2×, with 1× at 0. So presets
+pin `accel_profile = "flat"` — the adaptive profile's curve is
+velocity-dependent, and a DPI computed against it would be a number that means
+nothing — and then:
+
+```
+effective = base × (1 + sensitivity)
+```
+
+`base` is what the mouse's own sensor is set to. MouseMap cannot read it and
+never changes it; you tell it in the panel, and set the sensor itself in G
+HUB, `solaar`, or `piper`/`ratbagd`.
+
+Two consequences worth knowing:
+
+**Set the sensor high and come down from it.** A preset can reach at most 2×
+the base, which sounds like a limit and mostly is not, because scaling *down*
+is the good direction: the sensor still reports at full resolution and the
+compositor divides, so low-DPI motion stays smooth. Scaling up multiplies
+whole sensor counts and steps the pointer.
+
+**If `base` is wrong, nothing breaks.** Every preset is then wrong by the same
+factor: the numbers become labels, but the ratios between them stay exact. So
+a mouse whose sensor setting you cannot find out still gets a working feature.
+
+Switching a preset is one `hl.device` call inside the generated Lua, with the
+sensitivity table precomputed — no process to spawn on the press. The helper
+is only asked afterwards to remember the choice and draw the overlay.
 
 ### Moving a button
 
@@ -118,15 +209,18 @@ onboard profile with G HUB or `piper`/`ratbagd`. Be aware that this writes to
 the mouse, so unlike everything else here it *does* follow the device to
 other machines.
 
-To see exactly what each button emits:
+To see exactly what each button emits there is a read-only diagnostic. It
+opens `/dev/input/event*` directly, which is root-only on a normal desktop, so
+it is the one thing here that needs elevation — and it is never run by the
+plugin, only by you, by hand:
 
 ```bash
 sudo ./scripts/mousemap-sniff             # with a terminal
 pkexec ./scripts/mousemap-sniff --seconds 30   # without one
 ```
 
-It reads the evdev stream directly (root-only, read-only) and prints what
-every press emits, flagging any button that is sending a keystroke.
+It prints what every press emits and flags any button that is sending a
+keystroke. It never writes anything, to the mouse or to disk.
 
 ## How it works
 
@@ -134,13 +228,16 @@ every press emits, flagging any button that is sending a keystroke.
 ~/.config/omarchy/mousemap.json          your mapping (source of truth)
         │
         ▼  generated on Apply
-~/.local/state/omarchy-mousemap/bindings.lua
+~/.local/state/omarchy-mousemap/
+   bindings.lua    the binds and the DPI runtime
+   dpi.json        preset names and numbers, for the overlay
+   dpi-active      which preset each mouse is on
         │
         ▼  one loader line, added once
 ~/.config/hypr/bindings.lua
 ```
 
-The plugin generates a whole file it owns, rather than editing a fenced block
+The plugin generates whole files it owns, rather than editing a fenced block
 inside your hand-written `bindings.lua`. The only change to your own config is
 a single `dofile` line inside `-- BEGIN mousemap` markers, and a one-time
 backup is taken at `bindings.lua.mousemap.bak` before that line is ever added.
@@ -150,8 +247,13 @@ backup is taken at `bindings.lua.mousemap.bak` before that line is ever added.
 required module under any other name would be cached and a reload would
 silently keep serving the previous mapping.
 
-Bindings are scoped to the device with Hyprland's `device` bind option, so two
-different mice can carry two different maps.
+Bindings and pointer speed are both scoped to the device with Hyprland's
+`device` option, so two different mice can carry two different maps.
+
+Everything that touches the filesystem or the compositor goes through
+`scripts/mousemap`, so there is one place to read to know what this plugin can
+do. Nothing generated ever interpolates a name into a shell command: a DPI
+bind passes the helper two integers, and the helper looks up what they mean.
 
 ### Typing a shortcut
 
@@ -197,19 +299,30 @@ anchors also call, so a side-button marker can never drift off the drawn edge.
 | `Profiles.js` | shell geometry and the known-device table |
 | `Leaders.js` | label placement and leader routing |
 | `Actions.js` | what a button can do, and the Lua it compiles to |
+| `Dpi.js` | DPI presets, and the sensitivity arithmetic behind them |
 | `Config.js` | config shape, Lua generation, the loader hook |
 | `MouseCanvas.qml` | the diagram |
 | `MouseMapPanel.qml` | the panel |
 | `ActionPicker.qml` | the rebinding sidebar |
+| `DpiPanel.qml` | the DPI sidebar |
 | `scripts/mousemap` | the only path to the filesystem and the compositor |
 | `scripts/mousemap-sniff` | root diagnostic for buttons that will not map |
 
 ## Tests
 
 ```bash
-node tests/test_leaders.js   # layout invariants for 2..16 buttons
-node tests/test_config.js    # escaping, config, generated Lua
+tests/run
 ```
+
+No framework and no dependencies — each file is `node` plus the real `lua`
+and `luac` binaries, because the interesting failures are not in JavaScript.
+
+`test_dpi.js` executes the generated Lua in a real interpreter against a stub
+compositor and then presses the binds, so cycling, wrapping, sniper release
+and the state file are checked by behaviour rather than by grepping the
+output. That sandbox has `os.execute` and `io.popen` deleted, which turns a
+preset name or a device name that escaped its string literal into a loud
+failure rather than something a substring check might miss.
 
 `test_config.js` round-trips hostile strings through the real `lua`
 interpreter and syntax-checks generated output with `luac -p`, because the
@@ -222,18 +335,27 @@ of one rule is how keystroke buttons were silently dropped once already.
 one through every place, asserting that no two buttons ever end up in the
 same spot.
 
+`test_manifest.js` checks the manifest against the schema the shell enforces,
+and holds every other file that repeats the plugin id to it.
+
 ## Uninstall
 
 ```bash
-omarchy plugin disable steezy.mousemap
-rm -rf ~/.config/omarchy/plugins/steezy.mousemap
+omarchy plugin remove io.github.steezy-code.mousemap
 ```
 
 Then delete the `-- BEGIN mousemap` … `-- END mousemap` block from
 `~/.config/hypr/bindings.lua` and run `hyprctl reload`. Your original file is
 at `~/.config/hypr/bindings.lua.mousemap.bak`.
 
-## Requirements
+Your mapping and the generated files are left behind in case you come back;
+remove them with:
 
-Omarchy 4 (Hyprland 0.56+ with the Lua config), which is where `hl.bind`, the
-`device` bind option and `send_key_state` come from. No extra packages.
+```bash
+rm -f  ~/.config/omarchy/mousemap.json
+rm -rf ~/.local/state/omarchy-mousemap
+```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
