@@ -33,7 +33,20 @@ function normalize(raw) {
   for (var key in devices) {
     if (!Object.prototype.hasOwnProperty.call(devices, key)) continue
     var entry = devices[key] || {}
-    var clean = { label: String(entry.label || ""), learned: [], bindings: {} }
+    var clean = { label: String(entry.label || ""), learned: [], layout: {}, bindings: {} }
+
+    // code -> place id, recorded by the guided pass. Places are validated
+    // by the caller against Profiles.PLACES; anything unrecognised is kept
+    // as a string here and simply fails to resolve to a slot later, which
+    // degrades to the generic layout rather than breaking the diagram.
+    var layout = entry.layout && typeof entry.layout === "object" ? entry.layout : {}
+    for (var placeKey in layout) {
+      if (!Object.prototype.hasOwnProperty.call(layout, placeKey)) continue
+      var placeCode = parseInt(placeKey, 10)
+      if (!isFinite(placeCode) || placeCode < 0x110 || placeCode > 0x11f) continue
+      var placeId = String(layout[placeKey] || "")
+      if (placeId !== "") clean.layout[String(placeCode)] = placeId
+    }
 
     if (Array.isArray(entry.learned)) {
       for (var i = 0; i < entry.learned.length; i++) {

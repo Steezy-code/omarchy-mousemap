@@ -81,6 +81,22 @@ Item {
 
   readonly property var battery: device && device.battery ? device.battery : null
 
+  // code -> place id for this device, as recorded by the guided pass.
+  readonly property var layout: {
+    configRev
+    var entry = Config.deviceEntry(config, deviceKey)
+    return entry.layout || ({})
+  }
+
+  // Geometry in box coordinates, which is where roles now come from: a
+  // place the user pointed at knows which flank a button is on, and the
+  // code alone does not.
+  readonly property var placedButtons: {
+    configRev
+    return Profiles.buttonGeometry(
+      buttonList.map(function (b) { return b.code }), shapeName, null, layout)
+  }
+
   readonly property string shapeName: device
     ? Profiles.shapeFor(device.profileId, device.buttons.length)
     : "generic"
@@ -163,7 +179,7 @@ Item {
   function canvasButtons(w, h) {
     var rect = shellRect(w, h)
     var geo = Profiles.buttonGeometry(
-      buttonList.map(function (b) { return b.code }), shapeName, null)
+      buttonList.map(function (b) { return b.code }), shapeName, null, layout)
     var out = []
     for (var i = 0; i < geo.length; i++) {
       var g = geo[i]
@@ -468,38 +484,92 @@ Item {
 
   // ------------------------------------------------------------ learn
 
+  // Guided detection.
+  //
+  // The earlier version simply armed every code, collected whatever fired,
+  // and replaced the button list with the result. That had two faults: a
+  // press it missed silently deleted a button, and knowing a code says
+  // nothing about where the button physically is — which matters, because
+  // a shell with swappable side panels can put buttons on either flank.
+  //
+  // So this walks named places instead. It asks for one button at a time,
+  // waits for a code it has not seen yet, and records code -> place. Every
+  // step is skippable, and nothing is committed until the walk finishes,
+  // so an abandoned pass cannot damage a layout that already worked.
+
+  property int learnStep: 0
+  property var learnLayout: ({})     // place id -> code, this pass only
+  property var learnSeen: []         // codes claimed during this pass
+  property int learnRev: 0
+
+  readonly property var learnSteps: Profiles.placeSteps()
+
+  readonly property var learnCurrent: learnStep >= 0 && learnStep < learnSteps.length
+    ? learnSteps[learnStep] : null
+
   function startLearn() {
     learning = true
+    learnStep = 0
+    learnLayout = ({})
+    learnSeen = []
+    learnRev++
     learnedCodes = []
     learnTimer.start()
     learnProc.command = [root.helper, "learn", "arm"]
     learnProc.running = true
-    say("Press each button on your mouse. Left and right click are left alone.")
+    say("Press each button as it is named. Left and right click are left alone.")
   }
 
-  function stopLearn() {
+  function skipLearnStep() {
+    if (learnStep < learnSteps.length - 1) learnStep++
+    else finishLearn()
+  }
+
+  function cancelLearn() {
     learning = false
     learnTimer.stop()
-    if (learnedCodes.length > 0) {
-      // Left and right click always exist; the probe deliberately does not
-      // grab them, so add them back rather than reporting a mouse with no
-      // way to click.
-      var codes = learnedCodes.slice()
-      if (codes.indexOf(0x110) === -1) codes.push(0x110)
-      if (codes.indexOf(0x111) === -1) codes.push(0x111)
-      codes.sort(function (a, b) { return a - b })
-
-      if (!config.devices[deviceKey]) config.devices[deviceKey] = { label: "", learned: [], bindings: {} }
-      config.devices[deviceKey].learned = codes
-      config.devices[deviceKey].label = device ? device.label : ""
-      dirty = true
-      configRev++
-      say("Found " + codes.length + " buttons. Apply to save.")
-    } else {
-      say("No button presses detected.", true)
-    }
     disarmProc.running = true
+    say("Detection cancelled. Nothing changed.")
   }
+
+  // Commit: the places walked become the layout, and the codes claimed
+  // become the button list. Left and right click are added back because
+  // the probe deliberately never grabs them.
+  function finishLearn() {
+    learning = false
+    learnTimer.stop()
+
+    var codes = learnSeen.slice()
+    if (codes.indexOf(0x110) === -1) codes.push(0x110)
+    if (codes.indexOf(0x111) === -1) codes.push(0x111)
+    codes.sort(function (a, b) { return a - b })
+
+    if (!config.devices[deviceKey]) {
+      config.devices[deviceKey] = { label: "", learned: [], layout: {}, bindings: {} }
+    }
+    var entry = config.devices[deviceKey]
+    entry.learned = codes
+    entry.label = device ? device.label : ""
+
+    var layoutOut = { "272": "left-click", "273": "right-click" }
+    for (var place in learnLayout) {
+      if (Object.prototype.hasOwnProperty.call(learnLayout, place)) {
+        layoutOut[String(learnLayout[place])] = place
+      }
+    }
+    entry.layout = layoutOut
+
+    dirty = true
+    configRev++
+    disarmProc.running = true
+
+    var found = learnSeen.length
+    say(found === 0
+      ? "No buttons detected. If a button does nothing here it is probably sending a keystroke — see scripts/mousemap-sniff."
+      : "Found " + found + " button" + (found === 1 ? "" : "s") + ". Press Apply to save.")
+  }
+
+  function stopLearn() { cancelLearn() }
 
   Process { id: learnProc }
   Process {
@@ -514,17 +584,25 @@ Item {
     command: [root.helper, "learn", "read"]
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: learnReadProc.buffer = text }
     onExited: {
-      var codes = []
+      if (!root.learning) return
       var lines = learnReadProc.buffer.split("\n")
       for (var i = 0; i < lines.length; i++) {
-        var n = parseInt(lines[i].trim(), 10)
-        if (isFinite(n) && n >= 0x110 && n <= 0x11f && codes.indexOf(n) === -1) codes.push(n)
-      }
-      if (codes.length !== root.learnedCodes.length) {
-        root.pulseCode = codes.length > 0 ? codes[codes.length - 1] : -1
+        var code = parseInt(lines[i].trim(), 10)
+        if (!isFinite(code) || code < 0x110 || code > 0x11f) continue
+        // Only a code this pass has not already claimed advances the walk,
+        // so holding a button or double-pressing cannot eat the next step.
+        if (root.learnSeen.indexOf(code) !== -1) continue
+
+        root.learnSeen.push(code)
+        if (root.learnCurrent) root.learnLayout[root.learnCurrent.place] = code
+        root.learnedCodes = root.learnSeen.slice()
+        root.pulseCode = code
         pulseTimer.restart()
+        root.learnRev++
+
+        if (root.learnStep < root.learnSteps.length - 1) root.learnStep++
+        else { root.finishLearn(); return }
       }
-      root.learnedCodes = codes
     }
   }
 
@@ -843,11 +921,152 @@ Item {
             }
           }
 
+          // -------------------------------------------- detect wizard
+          Rectangle {
+            Layout.preferredWidth: 320
+            Layout.fillHeight: true
+            visible: root.learning
+            radius: Style.cornerRadius > 0 ? Style.cornerRadius : 6
+            color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.06)
+            border.width: 1
+            border.color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.35)
+
+            ColumnLayout {
+              anchors.fill: parent
+              anchors.margins: Style.space(4)
+              spacing: Style.space(3)
+
+              Text {
+                Layout.fillWidth: true
+                text: "Detecting buttons"
+                color: Color.foreground
+                font.family: Style.font.family
+                font.pixelSize: Style.font.subtitle
+                font.weight: Font.DemiBold
+              }
+              Text {
+                Layout.fillWidth: true
+                text: root.learnCurrent
+                  ? "Step " + (root.learnStep + 1) + " of " + root.learnSteps.length
+                  : ""
+                color: Color.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+
+              // The ask.
+              Rectangle {
+                Layout.fillWidth: true
+                radius: Style.cornerRadius > 0 ? Style.cornerRadius : 5
+                color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.14)
+                border.color: Color.accent
+                border.width: 1
+                implicitHeight: promptText.implicitHeight + Style.space(6)
+
+                Text {
+                  id: promptText
+                  anchors.fill: parent
+                  anchors.margins: Style.space(3)
+                  text: root.learnCurrent ? root.learnCurrent.prompt : ""
+                  wrapMode: Text.WordWrap
+                  horizontalAlignment: Text.AlignHCenter
+                  verticalAlignment: Text.AlignVCenter
+                  color: Color.accent
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.body
+                  font.weight: Font.DemiBold
+                }
+              }
+
+              Text {
+                Layout.fillWidth: true
+                text: "If your mouse has no such button, press Skip."
+                wrapMode: Text.WordWrap
+                color: Color.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+
+              // What has been claimed so far, so a mis-press is visible
+              // immediately rather than at the end.
+              Ui.PanelSectionHeader {
+                Layout.fillWidth: true
+                Layout.topMargin: Style.space(2)
+                text: "FOUND SO FAR"
+              }
+
+              Repeater {
+                model: { root.learnRev; return root.learnSeen }
+                delegate: RowLayout {
+                  required property var modelData
+                  Layout.fillWidth: true
+                  spacing: Style.space(2)
+                  Text {
+                    text: Devices.buttonName(modelData)
+                    color: Color.foreground
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                  }
+                  Item { Layout.fillWidth: true }
+                  Text {
+                    text: {
+                      root.learnRev
+                      for (var place in root.learnLayout) {
+                        if (root.learnLayout[place] === modelData) {
+                          var spec = Profiles.places()[place]
+                          return spec ? spec.role : place
+                        }
+                      }
+                      return ""
+                    }
+                    color: Color.accent
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                  }
+                }
+              }
+
+              Text {
+                Layout.fillWidth: true
+                visible: root.learnSeen.length === 0
+                text: "nothing yet"
+                color: Color.muted
+                font.italic: true
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+
+              Item { Layout.fillHeight: true }
+
+              RowLayout {
+                Layout.fillWidth: true
+                spacing: Style.space(2)
+                Ui.Button {
+                  text: "Cancel"
+                  bordered: true
+                  onClicked: root.cancelLearn()
+                }
+                Item { Layout.fillWidth: true }
+                Ui.Button {
+                  text: "Skip"
+                  bordered: true
+                  onClicked: root.skipLearnStep()
+                }
+                Ui.Button {
+                  text: "Finish"
+                  bordered: true
+                  active: root.learnSeen.length > 0
+                  onClicked: root.finishLearn()
+                }
+              }
+            }
+          }
+
           // -------------------------------------------- inspector
           Rectangle {
             Layout.preferredWidth: 320
             Layout.fillHeight: true
-            visible: root.selectedCode >= 0
+            visible: root.selectedCode >= 0 && !root.learning
             radius: Style.cornerRadius > 0 ? Style.cornerRadius : 6
             color: Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.035)
             border.width: 1
@@ -883,11 +1102,11 @@ Item {
           }
 
           Ui.Button {
-            text: root.learning ? "Stop detecting" : "Detect buttons"
+            text: root.learning ? "Cancel detect" : "Detect buttons"
             bordered: true
             selected: root.learning
-            tooltipText: "Press each button on the mouse so MouseMap learns which ones it really has."
-            onClicked: root.learning ? root.stopLearn() : root.startLearn()
+            tooltipText: "Walk through each button so MouseMap learns which ones exist and where they are."
+            onClicked: root.learning ? root.cancelLearn() : root.startLearn()
           }
           Ui.Button {
             text: "Rescan"
@@ -921,10 +1140,19 @@ Item {
     capturing = false
   }
 
-  // Role and protection flags for a code on the current device.
+  // Role and protection flags for a code on the current device. The role
+  // comes from the placed geometry rather than the code's conventional
+  // meaning, so a button the user put on the right flank is labelled as
+  // being on the right flank.
   function buttonMeta(code) {
-    for (var i = 0; i < buttonList.length; i++) {
-      if (buttonList[i].code === code) return buttonList[i]
+    var placed = placedButtons
+    for (var i = 0; i < placed.length; i++) {
+      if (placed[i].code === code) {
+        return {
+          code: code, role: placed[i].role, side: placed[i].side,
+          protected: Devices.isProtected(code), name: Devices.buttonName(code)
+        }
+      }
     }
     return { code: code, role: Devices.defaultRole(code), protected: Devices.isProtected(code),
              name: Devices.buttonName(code) }

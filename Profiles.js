@@ -194,6 +194,56 @@ function slotFor(code) {
   return { code: code, role: "Extra button", at: [0.50, 0.66], side: "right", kind: "palm" }
 }
 
+// ------------------------------------------------------------ named places
+//
+// Where a button physically is, independent of the code it sends.
+//
+// Code order says nothing about position. A shell with swappable side
+// panels — the G Pro Wireless is the obvious one — can put buttons on
+// either flank, so BTN_EXTRA might be the front-left button on one mouse
+// and the only right-hand button on another. Guessing from the code puts
+// the label on the wrong side of the diagram.
+//
+// So the guided pass in the panel asks which button is which and stores
+// code -> place. These are the places it can offer.
+var PLACES = {
+  "left-click":   { role: "Left click",        at: [0.27, 0.17], side: "left",  kind: "panel" },
+  "right-click":  { role: "Right click",       at: [0.73, 0.17], side: "right", kind: "panel" },
+  "wheel":        { role: "Wheel click",       at: [0.50, 0.26], side: "right", kind: "wheel" },
+  "top":          { role: "Top button",        at: [0.50, 0.37], side: "right", kind: "panel" },
+  "left-front":   { role: "Left side, front",  at: [0.00, 0.40], side: "left",  kind: "flank" },
+  "left-rear":    { role: "Left side, rear",   at: [0.00, 0.53], side: "left",  kind: "flank" },
+  "left-third":   { role: "Left side, third",  at: [0.00, 0.66], side: "left",  kind: "flank" },
+  "right-front":  { role: "Right side, front", at: [1.00, 0.40], side: "right", kind: "flank" },
+  "right-rear":   { role: "Right side, rear",  at: [1.00, 0.53], side: "right", kind: "flank" },
+  "palm":         { role: "Palm button",       at: [0.50, 0.62], side: "right", kind: "palm" }
+}
+
+// The order the guided pass walks through, and what to ask for each one.
+// Every step is skippable, so a mouse without a given button just moves on.
+var PLACE_STEPS = [
+  { place: "wheel",       prompt: "Click the scroll wheel" },
+  { place: "left-front",  prompt: "Press the FRONT button on the LEFT side" },
+  { place: "left-rear",   prompt: "Press the REAR button on the LEFT side" },
+  { place: "left-third",  prompt: "Any THIRD button on the LEFT side" },
+  { place: "right-front", prompt: "Press the FRONT button on the RIGHT side" },
+  { place: "right-rear",  prompt: "Press the REAR button on the RIGHT side" },
+  { place: "top",         prompt: "Any button on TOP, behind the wheel" },
+  { place: "palm",        prompt: "Any remaining button" }
+]
+
+function places() { return PLACES }
+function placeSteps() { return PLACE_STEPS }
+
+function placeSlot(placeId, code) {
+  var place = PLACES[placeId]
+  if (!place) return null
+  return {
+    code: code, role: place.role, at: place.at,
+    side: place.side, kind: place.kind
+  }
+}
+
 // Resolve a slot to a point in box coordinates. Flank buttons ride the
 // silhouette so they stay on the edge for any shape.
 function anchorFor(slot, shapeName) {
@@ -209,7 +259,7 @@ function anchorFor(slot, shapeName) {
 
 // Build the drawable button list for a device. `codes` is whatever
 // discovery settled on; profile overrides reposition individual codes.
-function buttonGeometry(codes, shapeName, overrides) {
+function buttonGeometry(codes, shapeName, overrides, layout) {
   var byCode = {}
   if (overrides) for (var o = 0; o < overrides.length; o++) byCode[overrides[o].code] = overrides[o]
 
@@ -217,9 +267,13 @@ function buttonGeometry(codes, shapeName, overrides) {
   for (var i = 0; i < codes.length; i++) {
     var code = codes[i]
     var override = byCode[code]
-    var slot = slotFor(code)
-    if (override && override.at) slot = { code: code, role: override.role || slot.role, at: override.at, side: override.side || slot.side, kind: override.kind || slot.kind }
-    else if (override) slot = { code: code, role: override.role || slot.role, at: slot.at, side: override.side || slot.side, kind: override.kind || slot.kind }
+
+    // A place the user actually pointed at outranks everything: it is the
+    // only source here that knows which flank the button is really on.
+    var placed = layout ? placeSlot(layout[code] || layout[String(code)], code) : null
+    var slot = placed || slotFor(code)
+    if (!placed && override && override.at) slot = { code: code, role: override.role || slot.role, at: override.at, side: override.side || slot.side, kind: override.kind || slot.kind }
+    else if (!placed && override) slot = { code: code, role: override.role || slot.role, at: slot.at, side: override.side || slot.side, kind: override.kind || slot.kind }
 
     var point = anchorFor(slot, shapeName)
     out.push({ code: code, role: slot.role, kind: point.kind, side: point.side, x: point.x, y: point.y })
@@ -309,6 +363,10 @@ if (typeof module !== "undefined") {
     halfWidthAt: halfWidthAt,
     splitY: splitY,
     slotFor: slotFor,
+    places: places,
+    placeSteps: placeSteps,
+    placeSlot: placeSlot,
+    PLACES: PLACES,
     anchorFor: anchorFor,
     buttonGeometry: buttonGeometry,
     profiles: profiles,
