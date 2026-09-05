@@ -45,12 +45,26 @@ Nothing is live until you press **Apply**.
 - **Edit** — copy, paste, cut, undo, redo, find
 - **Window** — close, fullscreen, float/tile, pin
 - **Workspace** — next, previous, last, scratchpad
-- **Omarchy** — menu, launcher, screenshot, clipboard history, emoji picker
+- **Omarchy** — menu, launcher, screenshot, clipboard history, emoji picker,
+  dictation
 - **Media** — volume, play/pause, track skip
 - **Custom** — record any key combo, or run any command
 
 Left and right click are shown but flagged: binding them takes the click
 away everywhere, including in the panel that did it.
+
+### Moving a button
+
+Drag a label to say where its button really is. The shell shows every spot
+it could go, and dropping on one — or onto another label — exchanges the
+two, so nothing is ever left stacked on top of anything else. The same
+spots are listed in the sidebar under **Where is this button?** for anyone
+who would rather click than drag.
+
+This matters because detection asks *which button is which*, and a
+mis-press during that pass puts a button in the wrong place on the diagram.
+**Test placement** arms the same probes but records nothing: press a
+button, watch where it lights up, and drag its label if it is wrong.
 
 ### Detect buttons
 
@@ -150,6 +164,15 @@ same workaround ([discussion #14099](https://github.com/hyprwm/Hyprland/discussi
 A virtual keyboard such as `wtype` is also wrong here: it types at the seat,
 so a modifier you are physically holding merges into the injected chord.
 
+The limit of this mechanism is that a chord only ever reaches the focused
+**application**. Hyprland matches its own keybindings against real input
+from the seat, so an injected key never reaches the bind matcher and a
+shortcut the compositor owns cannot be triggered by typing it —
+`send_shortcut` included. Anything Hyprland binds (a Super shortcut, nearly
+always) has to be **Run command…** with whatever that binding runs, which
+is why *Toggle dictation* execs `voxtype record toggle` rather than sending
+Super+Ctrl+X. The panel says so when you record a chord carrying Super.
+
 ## Layout
 
 The label placement is isotonic regression (pool-adjacent-violators). Each
@@ -190,7 +213,14 @@ node tests/test_config.js    # escaping, config, generated Lua
 
 `test_config.js` round-trips hostile strings through the real `lua`
 interpreter and syntax-checks generated output with `luac -p`, because the
-generated file is executed by the compositor.
+generated file is executed by the compositor. It also holds the two copies
+of the trigger rules — `Config` generates the bind string, `Devices` states
+it for the UI — to each other across the whole id space, because two copies
+of one rule is how keystroke buttons were silently dropped once already.
+
+`test_leaders.js` sweeps every button count from 2 to 16 and shuffles each
+one through every place, asserting that no two buttons ever end up in the
+same spot.
 
 ## Uninstall
 

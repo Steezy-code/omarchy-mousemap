@@ -285,4 +285,42 @@ console.log("key capture: all assertions passed")
   assert.ok(emitted.text.includes('hl.bind("mouse:274"'), "mouse trigger emitted")
 }
 
+// ------------------------------------------------------- trigger bind form
+
+// Config generates the bind string and Devices states the same rule for
+// the UI. Two copies of one rule is how keystroke buttons were silently
+// dropped once already, so they are held to each other across the whole id
+// space rather than trusted to stay in step.
+for (let id = 0x110; id <= 0x11f; id++) {
+  assert.strictEqual(C.triggerBind(id), D.triggerBind(id), `bind form differs at ${id}`)
+  assert.strictEqual(C.triggerBind(id), "mouse:" + id)
+  assert.ok(C.validTrigger(id), `${id} should be a valid trigger`)
+}
+for (let kc = 0; kc <= 255; kc++) {
+  const id = C.KEY_BASE + kc
+  assert.strictEqual(C.triggerBind(id), D.triggerBind(id), `bind form differs at ${id}`)
+  assert.strictEqual(C.triggerBind(id), "code:" + kc)
+  assert.ok(C.validTrigger(id), `${id} should be a valid trigger`)
+}
+assert.strictEqual(C.KEY_BASE, D.KEY_BASE, "the two KEY_BASE constants must agree")
+
+// Nothing outside those two runs is a trigger.
+for (const id of [0, 0x10f, 0x120, 0xfff, C.KEY_BASE - 1, C.KEY_BASE + 256, NaN]) {
+  assert.ok(!C.validTrigger(id), `${id} should not be a valid trigger`)
+}
+
+// An entry built by any path has every field the panel reads, including
+// the layout — an entry without one is a device whose buttons have no
+// places, which reads as a mouse nobody ever detected.
+{
+  const shape = Object.keys(C.blankEntry()).sort()
+  assert.deepStrictEqual(shape, ["bindings", "label", "layout", "learned"])
+  const config = C.defaults()
+  C.setBinding(config, "new:device", 0x113, { action: "back", mods: [], key: "", command: "" })
+  assert.deepStrictEqual(Object.keys(config.devices["new:device"]).sort(), shape)
+  assert.deepStrictEqual(Object.keys(C.deviceEntry(C.defaults(), "missing")).sort(), shape)
+}
+
+console.log("bind form + entry shape: all assertions passed")
+
 console.log("trigger round-trip: all assertions passed")

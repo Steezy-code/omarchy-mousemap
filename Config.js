@@ -26,8 +26,21 @@ function validTrigger(id) {
   return id >= KEY_BASE && id <= KEY_BASE + 255
 }
 
+// The bind string Hyprland takes for a trigger. Devices.triggerBind states
+// the same rule for the UI side; the tests hold the two to each other over
+// the whole id space so the mirror cannot drift apart unnoticed.
+function triggerBind(id) {
+  return id >= KEY_BASE ? "code:" + (id - KEY_BASE) : "mouse:" + id
+}
+
 function defaults() {
   return { version: CONFIG_VERSION, scopeToDevice: true, devices: {} }
+}
+
+// The shape every device entry has. One definition, because an entry built
+// without a `layout` reads back as a device whose buttons have no places.
+function blankEntry() {
+  return { label: "", learned: [], layout: {}, bindings: {} }
 }
 
 // Accept whatever is on disk and return something the UI can rely on.
@@ -43,7 +56,8 @@ function normalize(raw) {
   for (var key in devices) {
     if (!Object.prototype.hasOwnProperty.call(devices, key)) continue
     var entry = devices[key] || {}
-    var clean = { label: String(entry.label || ""), learned: [], layout: {}, bindings: {} }
+    var clean = blankEntry()
+    clean.label = String(entry.label || "")
 
     // code -> place id, recorded by the guided pass. Places are validated
     // by the caller against Profiles.PLACES; anything unrecognised is kept
@@ -88,7 +102,7 @@ function normalize(raw) {
 }
 
 function deviceEntry(config, key) {
-  return (config && config.devices && config.devices[key]) || { label: "", learned: [], bindings: {} }
+  return (config && config.devices && config.devices[key]) || blankEntry()
 }
 
 function bindingFor(config, key, code) {
@@ -97,7 +111,7 @@ function bindingFor(config, key, code) {
 }
 
 function setBinding(config, key, code, binding) {
-  if (!config.devices[key]) config.devices[key] = { label: "", learned: [], bindings: {} }
+  if (!config.devices[key]) config.devices[key] = blankEntry()
   var slot = String(code)
   if (!binding || !binding.action || binding.action === "none") delete config.devices[key].bindings[slot]
   else config.devices[key].bindings[slot] = binding
@@ -169,7 +183,7 @@ function generateLua(devices, config, Actions) {
       }
 
       var isKey = code >= KEY_BASE
-      var key = isKey ? "code:" + (code - KEY_BASE) : "mouse:" + code
+      var key = triggerBind(code)
 
       // Without device scoping every bind is global, so the first device
       // to claim a code wins and the rest would silently shadow it.
@@ -275,6 +289,8 @@ if (typeof module !== "undefined") {
     CONFIG_VERSION: CONFIG_VERSION,
     KEY_BASE: KEY_BASE,
     validTrigger: validTrigger,
+    triggerBind: triggerBind,
+    blankEntry: blankEntry,
     defaults: defaults,
     normalize: normalize,
     deviceEntry: deviceEntry,

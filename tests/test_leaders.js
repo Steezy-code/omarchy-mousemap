@@ -184,4 +184,86 @@ for (const shapeName of Object.keys(P.SHAPES)) {
     "outline and anchor math agree")
 }
 
-console.log("leaders + geometry: all assertions passed")
+// ---------------------------------------------------------------- placement
+
+// A code's default spot and the named place it stands for are one and the
+// same, so a button that has never been detected can still be swapped with
+// one that has.
+assert.strictEqual(P.defaultPlace(0x113), "left-rear")
+assert.strictEqual(P.defaultPlace(0x114), "left-front")
+// Every code has one, or a swap would have nowhere to put the button it
+// displaces.
+for (let code = 0x110; code <= 0x11f; code++) {
+  assert.ok(P.defaultPlace(code) !== "", `no default place for ${code}`)
+}
+for (let code = 0x110; code <= 0x11f; code++) {
+  const place = P.defaultPlace(code)
+  assert.deepStrictEqual(P.slotFor(code).at, P.PLACES[place].at,
+    `slot and place disagree about where ${code} is`)
+}
+
+// The role stays the code's own. An undetected mouse should say "Back",
+// which is what that button does today, not "Left side, rear".
+assert.strictEqual(P.slotFor(0x113).role, "Back")
+
+// What is recorded outranks the default.
+assert.strictEqual(P.effectivePlace({ "275": "palm" }, 0x113), "palm")
+assert.strictEqual(P.effectivePlace({}, 0x113), "left-rear")
+
+// Moving onto an occupant that is only there by default still swaps: it
+// has no layout entry to find, and leaving it put would stack two buttons
+// on one spot.
+{
+  const codes = [0x110, 0x111, 0x113, 0x115]
+  const moved = P.movePlace({}, codes, 0x115, "left-rear")
+  assert.strictEqual(P.effectivePlace(moved, 0x115), "left-rear")
+  assert.strictEqual(P.effectivePlace(moved, 0x113), "left-third")
+}
+
+// And onto one that was put there explicitly.
+{
+  const codes = [0x113, 0x115]
+  const before = { "277": "left-rear", "275": "left-third" }
+  const moved = P.movePlace(before, codes, 0x113, "left-rear")
+  assert.strictEqual(P.effectivePlace(moved, 0x113), "left-rear")
+  assert.strictEqual(P.effectivePlace(moved, 0x115), "left-third")
+  assert.deepStrictEqual(before, { "277": "left-rear", "275": "left-third" },
+    "movePlace must not modify the layout it was given")
+}
+
+// A swap is exact in both directions, including out of a place the guided
+// pass never asks about.
+{
+  const codes = [0x113, 0x116]
+  const moved = P.movePlace({}, codes, 0x116, "left-rear")
+  assert.strictEqual(P.effectivePlace(moved, 0x116), "left-rear")
+  assert.strictEqual(P.effectivePlace(moved, 0x113), "left-fourth")
+}
+
+// The primary clicks are not somewhere a button can be moved to.
+{
+  const before = { "272": "left-click" }
+  assert.deepStrictEqual(P.movePlace(before, [0x110, 0x113], 0x113, "left-click"), before)
+}
+
+// The invariant that matters, swept: however a device's buttons are
+// shuffled, no two of them ever end up in the same place.
+for (let n = 2; n <= 16; n++) {
+  const codes = []
+  for (let i = 0; i < n; i++) codes.push(0x110 + i)
+  let layout = {}
+  for (const place of P.movablePlaces()) {
+    for (const code of codes) {
+      layout = P.movePlace(layout, codes, code, place)
+      const seen = {}
+      for (const c of codes) {
+        const at = P.effectivePlace(layout, c)
+        if (at === "") continue
+        assert.ok(!seen[at], `n=${n}: ${seen[at]} and ${c} both at ${at}`)
+        seen[at] = c
+      }
+    }
+  }
+}
+
+console.log("leaders + geometry + placement: all assertions passed")

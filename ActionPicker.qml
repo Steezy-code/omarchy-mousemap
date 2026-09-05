@@ -20,16 +20,23 @@ Item {
   readonly property string currentAction: binding ? binding.action : "none"
   readonly property bool isProtected: meta ? meta.protected : false
 
+  // A recorded chord carrying Super is almost certainly aimed at a
+  // compositor binding, which a typed chord cannot reach.
+  readonly property bool chordIsCompositor: {
+    if (!binding || currentAction !== "custom-key") return false
+    var mods = binding.mods || []
+    return mods.indexOf("SUPER") !== -1
+  }
+
   // Placement controls open automatically during a test, since that is
   // when a wrong position becomes visible.
   property bool placesOpen: false
   readonly property bool showPlaces: placesOpen || (panel ? panel.testing : false)
 
-  readonly property string currentPlace: {
-    if (!panel) return ""
-    var layout = panel.layout || ({})
-    return layout[String(code)] || ""
-  }
+  // Where the button sits now, including the place its code occupies by
+  // default — otherwise a button nobody has moved shows no current place
+  // at all, and every chip looks equally unchosen.
+  readonly property string currentPlace: panel && code >= 0 ? panel.placeOf(code) : ""
 
   onCodeChanged: placesOpen = false
 
@@ -124,6 +131,16 @@ Item {
       Layout.fillWidth: true
       visible: root.showPlaces
       text: "WHERE IS THIS BUTTON?"
+    }
+
+    Text {
+      Layout.fillWidth: true
+      visible: root.showPlaces
+      text: "Pick a spot, or drag the button's label on the diagram."
+      wrapMode: Text.WordWrap
+      color: Color.muted
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
     }
 
     Flow {
@@ -351,6 +368,33 @@ Item {
           panel.setChord(root.code, Actions.modsFromQt(event.modifiers), sym)
           panel.capturing = false
         }
+      }
+    }
+
+    // A Super shortcut is almost always one Hyprland owns, and a typed
+    // chord only ever reaches the focused app — the compositor's keybind
+    // matcher never sees an injected key. Said here, at the moment one is
+    // recorded, rather than leaving a button that silently does nothing.
+    Rectangle {
+      Layout.fillWidth: true
+      visible: root.currentAction === "custom-key" && root.chordIsCompositor
+      radius: Style.cornerRadius > 0 ? Style.cornerRadius : 4
+      color: Qt.rgba(Color.urgent.r, Color.urgent.g, Color.urgent.b, 0.10)
+      border.color: Qt.rgba(Color.urgent.r, Color.urgent.g, Color.urgent.b, 0.35)
+      border.width: 1
+      implicitHeight: superNote.implicitHeight + Style.space(4)
+
+      Text {
+        id: superNote
+        anchors.fill: parent
+        anchors.margins: Style.space(2)
+        text: "Super shortcuts are normally Hyprland's own, and a typed shortcut "
+            + "only reaches the focused app — it will not trigger one. Use "
+            + "\u201cRun command\u2026\u201d with whatever that shortcut runs."
+        wrapMode: Text.WordWrap
+        color: Color.urgent
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
       }
     }
 

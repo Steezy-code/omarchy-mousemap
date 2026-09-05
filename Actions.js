@@ -232,12 +232,14 @@ var ACTIONS = [
     command: "omarchy-shell shell toggle omarchy.clipboard" },
   { id: "omarchy-emoji", group: "Omarchy", label: "Emoji picker", kind: "exec",
     command: "omarchy-shell shell toggle omarchy.emojis" },
-  // Typed as a chord rather than run as a command, so it triggers whatever
-  // the user already has on this shortcut instead of hard-coding one
-  // dictation tool.
-  { id: "dictation", group: "Omarchy", label: "Toggle dictation", kind: "chord",
-    mods: "SUPER CTRL", key: "x",
-    hint: "Sends Super+Ctrl+X, whatever you have that bound to." },
+  // Runs the command Omarchy's own Super+Ctrl+X runs, rather than typing
+  // that chord. Typing it does nothing at all: a chord is injected at the
+  // focused client, and Hyprland's keybind matcher never sees an injected
+  // key, so a shortcut the compositor owns cannot be triggered this way.
+  // See emitChord().
+  { id: "dictation", group: "Omarchy", label: "Toggle dictation", kind: "exec",
+    command: "voxtype record toggle",
+    hint: "Same as Omarchy's Super+Ctrl+X. Needs voxtype installed." },
 
   // -------------------------------------------------- media
   { id: "vol-up", group: "Media", label: "Volume up", kind: "exec",
@@ -325,6 +327,13 @@ function resolve(binding) {
 //
 // A virtual keyboard (wtype) is also wrong here: it types at the seat, so
 // a modifier the user is physically holding merges into the chord.
+//
+// The limit of the whole mechanism: a chord reaches the focused client and
+// nothing else. Hyprland's keybind matcher runs on real input from the
+// seat, so an injected key never reaches it and a chord cannot trigger a
+// binding the compositor owns — verified against a throwaway bind, with
+// send_shortcut failing the same way. Anything Hyprland binds (a Super
+// shortcut, almost always) has to be an exec of what that binding runs.
 function emitChord(mods, key, indent) {
   var pad = indent || "  "
   var modArg = mods.length > 0 ? luaString(mods.join(" ")) : '""'

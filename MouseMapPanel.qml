@@ -73,6 +73,15 @@ Item {
   property int testConsumed: 0
   property int testPresses: 0
 
+  // Dragging a label to say where its button really is. The chip follows
+  // the cursor and the shell shows every place it could land on; nothing
+  // moves until it is dropped on one.
+  property int dragCode: -1
+  property real dragX: 0
+  property real dragY: 0
+  property string dropPlace: ""
+  readonly property bool dragging: dragCode >= 0
+
   // The action picker's working copy for the selected button, so a
   // half-typed command does not churn the config on every keystroke.
   property string draftCommand: ""
@@ -213,6 +222,41 @@ Item {
     })
   }
 
+  // Every place a dragged label may be dropped on, in canvas pixels. Built
+  // from the same anchor maths the buttons use, so a target ring sits
+  // exactly where the button will end up.
+  function canvasPlaces(w, h) {
+    configRev
+    var rect = shellRect(w, h)
+    var i
+
+    // The guided pass's places, plus wherever this mouse's buttons already
+    // are. Showing all fifteen would put rings all over a five-button
+    // mouse for spots it does not have.
+    var wanted = ({})
+    var steps = Profiles.placeSteps()
+    for (i = 0; i < steps.length; i++) wanted[steps[i].place] = true
+    for (i = 0; i < buttonList.length; i++) {
+      var at = placeOf(buttonList[i].code)
+      if (Profiles.isMovablePlace(at)) wanted[at] = true
+    }
+
+    var ids = Profiles.movablePlaces()
+    var out = []
+    for (i = 0; i < ids.length; i++) {
+      if (!wanted[ids[i]]) continue
+      var slot = Profiles.placeSlot(ids[i], -1)
+      var point = Profiles.anchorFor(slot, shapeName)
+      out.push({
+        place: ids[i],
+        role: slot.role,
+        x: rect.x + (point.x / Profiles.BOX_W) * rect.width,
+        y: rect.y + (point.y / Profiles.BOX_H) * rect.height
+      })
+    }
+    return out
+  }
+
   // ------------------------------------------------------------ actions
 
   function setAction(code, actionId) {
@@ -248,29 +292,67 @@ Item {
     dirty = true
   }
 
-  // Move a button to a different spot on the shell. If something already
-  // occupies the target, the two swap rather than one silently vanishing.
-  function setPlace(code, placeId) {
-    if (!config.devices[deviceKey]) {
-      config.devices[deviceKey] = { label: "", learned: [], layout: {}, bindings: {} }
-    }
+  function deviceEntryForWrite() {
+    if (!config.devices[deviceKey]) config.devices[deviceKey] = Config.blankEntry()
     var entry = config.devices[deviceKey]
     if (!entry.layout) entry.layout = {}
+    return entry
+  }
 
-    var slot = String(code)
-    var previous = entry.layout[slot] || ""
+  function deviceCodes() {
+    var out = []
+    for (var i = 0; i < buttonList.length; i++) out.push(buttonList[i].code)
+    return out
+  }
 
-    for (var other in entry.layout) {
-      if (!Object.prototype.hasOwnProperty.call(entry.layout, other)) continue
-      if (other === slot) continue
-      if (entry.layout[other] !== placeId) continue
-      if (previous !== "") entry.layout[other] = previous
-      else delete entry.layout[other]
-    }
+  // Where a button sits: what was recorded for it, or the place its code
+  // conventionally occupies.
+  function placeOf(code) {
+    configRev
+    return Profiles.effectivePlace(layout, code)
+  }
 
-    entry.layout[slot] = placeId
+  // Move a button to a different spot on the shell. Whatever was there
+  // takes the mover's old place, so the two exchange rather than one of
+  // them being left stacked under the other.
+  function setPlace(code, placeId) {
+    var entry = deviceEntryForWrite()
+    entry.layout = Profiles.movePlace(entry.layout, deviceCodes(), code, placeId)
     configRev++
     dirty = true
+  }
+
+  // ------------------------------------------------------------ dragging
+
+  function beginDrag(code) {
+    dragCode = code
+    dropPlace = ""
+    hoveredCode = code
+    say("Drop the label where that button really is. Esc cancels.")
+  }
+
+  function updateDrag(x, y) {
+    dragX = x
+    dragY = y
+    dropPlace = diagram.dropPlaceAt(x, y)
+  }
+
+  function endDrag() {
+    var code = dragCode
+    var place = dropPlace
+    dragCode = -1
+    dropPlace = ""
+
+    if (place === "" || place === placeOf(code)) { say(""); return }
+    setPlace(code, place)
+    var spec = Profiles.places()[place]
+    say("Moved to " + (spec ? spec.role : place) + ". Press Apply to save.")
+  }
+
+  function cancelDrag() {
+    dragCode = -1
+    dropPlace = ""
+    say("")
   }
 
   function clearButton(code) {
@@ -576,10 +658,7 @@ Item {
     if (codes.indexOf(0x111) === -1) codes.push(0x111)
     codes.sort(function (a, b) { return a - b })
 
-    if (!config.devices[deviceKey]) {
-      config.devices[deviceKey] = { label: "", learned: [], layout: {}, bindings: {} }
-    }
-    var entry = config.devices[deviceKey]
+    var entry = deviceEntryForWrite()
     entry.learned = codes
     entry.label = device ? device.label : ""
 
@@ -757,7 +836,7 @@ Item {
     id: batteryTimer
     interval: 60000
     repeat: true
-    running: window.visible && !root.learning && !root.busy
+    running: window.visible && !root.learning && !root.testing && !root.dragging && !root.busy
     onTriggered: if (!detectProc.running) root.refresh()
   }
 
@@ -802,7 +881,8 @@ Item {
       Keys.onPressed: function (event) {
         if (root.capturing) return
         if (event.key === Qt.Key_Escape) {
-          if (root.selectedCode >= 0) root.selectedCode = -1
+          if (root.dragging) root.cancelDrag()
+          else if (root.selectedCode >= 0) root.selectedCode = -1
           else root.requestClose()
           event.accepted = true
         }
@@ -924,6 +1004,46 @@ Item {
             readonly property var buttons: root.canvasButtons(width, height)
             readonly property var placements: root.canvasPlacements(width, height, buttons)
 
+            // Only computed while a label is in flight; the diagram is
+            // otherwise exactly what it was.
+            readonly property var dropTargets: root.dragging ? root.canvasPlaces(width, height) : []
+
+            readonly property var dragChip: {
+              if (!root.dragging) return null
+              for (var i = 0; i < placements.length; i++) {
+                if (placements[i].code !== root.dragCode) continue
+                var c = placements[i].chip
+                return { x: root.dragX - c.w / 2, y: root.dragY, w: c.w, h: c.h }
+              }
+              return null
+            }
+
+            // What a drop at this point would mean. Landing on another
+            // label is the same as landing on its place — the two swap —
+            // which makes the obvious gesture work without having to aim
+            // at a ring on the shell.
+            function dropPlaceAt(px, py) {
+              for (var i = 0; i < placements.length; i++) {
+                var p = placements[i]
+                if (p.code === root.dragCode) continue
+                var c = p.chip
+                if (px >= c.x && px <= c.x + c.w && py >= c.y - c.h / 2 && py <= c.y + c.h / 2) {
+                  var place = root.placeOf(p.code)
+                  return Profiles.isMovablePlace(place) ? place : ""
+                }
+              }
+
+              var best = ""
+              var bestDistance = 44 * 44
+              for (var t = 0; t < dropTargets.length; t++) {
+                var dx = dropTargets[t].x - px
+                var dy = dropTargets[t].y - py
+                var d = dx * dx + dy * dy
+                if (d < bestDistance) { bestDistance = d; best = dropTargets[t].place }
+              }
+              return best
+            }
+
             MouseCanvas {
               id: canvas
               anchors.fill: parent
@@ -936,6 +1056,10 @@ Item {
               mapped: root.mappedSet
               pulseCode: root.pulseCode
               battery: root.battery
+              dropTargets: diagram.dropTargets
+              dropPlace: root.dropPlace
+              dragCode: root.dragCode
+              dragChip: diagram.dragChip
               reveal: 0
 
               NumberAnimation {
@@ -978,18 +1102,36 @@ Item {
                 readonly property bool live: resolved.ok
                 readonly property bool hot: root.hoveredCode === code || root.selectedCode === code
                 readonly property var meta: root.buttonMeta(code)
+                readonly property bool dragged: root.dragCode === code
 
-                x: modelData.chip.x
-                y: modelData.chip.y - modelData.chip.h / 2
+                // A primary click cannot be moved: detection assigns those
+                // two itself, and there is nowhere else for them to be.
+                readonly property bool movable: !meta.protected
+
+                // While dragged the chip simply follows the cursor. Placed
+                // as a condition on the same binding rather than by
+                // assigning x, so it snaps back into the solved layout on
+                // release without anything having to restore it.
+                x: dragged ? root.dragX - width / 2 : modelData.chip.x
+                y: dragged ? root.dragY - height / 2 : modelData.chip.y - modelData.chip.h / 2
                 width: modelData.chip.w
                 height: modelData.chip.h
+                z: dragged ? 2 : 0
+                scale: dragged ? 1.03 : 1
                 radius: Style.cornerRadius > 0 ? Style.cornerRadius : 5
 
-                color: hot ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.16)
+                // Animated only when not being dragged, so the chip tracks
+                // the cursor exactly and still eases into its new home.
+                Behavior on x { enabled: !chip.dragged; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+                Behavior on y { enabled: !chip.dragged; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+                Behavior on scale { NumberAnimation { duration: 110 } }
+
+                color: dragged ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.26)
+                       : hot ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.16)
                            : (live ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.07)
                                    : Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.045))
                 border.width: 1
-                border.color: hot ? Color.accent
+                border.color: dragged || hot ? Color.accent
                                   : (live ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.42)
                                           : Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.16))
 
@@ -1034,11 +1176,51 @@ Item {
                   Item { Layout.fillHeight: true }
                 }
 
+                // Click to rebind, drag to say where the button really
+                // is. The drag is driven by hand rather than by the
+                // MouseArea's own `drag`, because the chip's position is a
+                // binding on the solved layout and handing that to the
+                // drag machinery would overwrite it for good.
                 MouseArea {
+                  id: chipMouse
                   anchors.fill: parent
                   hoverEnabled: true
+                  acceptedButtons: Qt.LeftButton
+                  cursorShape: !chip.movable ? Qt.ArrowCursor
+                             : (chip.dragged ? Qt.ClosedHandCursor : Qt.OpenHandCursor)
+
+                  property real pressX: 0
+                  property real pressY: 0
+                  property bool armed: false
+
                   onEntered: { chipHover.active = true; root.hoveredCode = chip.code }
-                  onExited: { chipHover.active = false; root.hoveredCode = -1 }
+                  onExited: { chipHover.active = false; if (!chip.dragged) root.hoveredCode = -1 }
+
+                  onPressed: function (mouse) {
+                    pressX = mouse.x
+                    pressY = mouse.y
+                    armed = chip.movable
+                  }
+
+                  onPositionChanged: function (mouse) {
+                    if (!armed) return
+                    // A few pixels of slop, so a click with an unsteady
+                    // hand stays a click.
+                    if (!chip.dragged
+                        && Math.abs(mouse.x - pressX) + Math.abs(mouse.y - pressY) < 6) return
+                    if (!chip.dragged) root.beginDrag(chip.code)
+                    var point = mapToItem(diagram, mouse.x, mouse.y)
+                    root.updateDrag(point.x, point.y)
+                  }
+
+                  onReleased: {
+                    if (chip.dragged) root.endDrag()
+                    armed = false
+                  }
+                  onCanceled: {
+                    if (chip.dragged) root.cancelDrag()
+                    armed = false
+                  }
                   onClicked: root.selectButton(chip.code)
                 }
               }

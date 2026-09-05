@@ -28,6 +28,14 @@ Canvas {
   property var mapped: ({})         // code -> true when the button is bound
   property int pulseCode: -1        // flashes during a learn pass
 
+  // Dragging a label to move its button. All of this is empty unless a
+  // drag is in progress, so nothing here costs anything the rest of the
+  // time. Geometry comes down in canvas pixels like everything else.
+  property var dropTargets: []      // [{ place, role, x, y }]
+  property string dropPlace: ""     // the target under the cursor
+  property int dragCode: -1
+  property var dragChip: null       // { x, y, w, h } of the label in flight
+
   // Normalized battery from Devices.matchBattery, or null for a wired
   // mouse that has nothing to report.
   property var battery: null
@@ -48,6 +56,10 @@ Canvas {
   onPulseCodeChanged: requestPaint()
   onShellChanged: requestPaint()
   onShapeNameChanged: requestPaint()
+  onDropTargetsChanged: requestPaint()
+  onDropPlaceChanged: requestPaint()
+  onDragCodeChanged: requestPaint()
+  onDragChipChanged: requestPaint()
 
   function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }
 
@@ -136,6 +148,8 @@ Canvas {
     drawShell(ctx)
     drawLeaders(ctx)
     drawHotspots(ctx)
+    drawDropTargets(ctx)
+    drawDragLeader(ctx)
   }
 
   // A wide, very faint accent wash behind the shell so the mouse sits in
@@ -449,6 +463,9 @@ Canvas {
   function drawLeaders(ctx) {
     for (var i = 0; i < placements.length; i++) {
       var p = placements[i]
+      // A label in flight is drawn its own way, from wherever it would
+      // land rather than from where it came.
+      if (p.code === dragCode) continue
       var hot = p.code === hoveredCode || p.code === selectedCode
       var isMapped = !!mapped[p.code]
 
@@ -501,6 +518,69 @@ Canvas {
         ctx.stroke()
       }
     }
+  }
+
+  // ------------------------------------------------------- drag targets
+
+  function targetPoint(place) {
+    for (var i = 0; i < dropTargets.length; i++) {
+      if (dropTargets[i].place === place) return dropTargets[i]
+    }
+    return null
+  }
+
+  // Every place a dragged label can be dropped on, as a ring on the shell.
+  // Rings rather than filled dots so they read as somewhere to put
+  // something, and cannot be mistaken for the buttons already drawn.
+  function drawDropTargets(ctx) {
+    for (var i = 0; i < dropTargets.length; i++) {
+      var t = dropTargets[i]
+      var active = t.place === dropPlace
+      var r = active ? 13 : 9
+
+      if (active) {
+        var g = ctx.createRadialGradient(t.x, t.y, 0, t.x, t.y, r * 2.6)
+        g.addColorStop(0, alpha(accent, 0.34))
+        g.addColorStop(1, alpha(accent, 0))
+        ctx.fillStyle = g
+        ctx.fillRect(t.x - r * 2.6, t.y - r * 2.6, r * 5.2, r * 5.2)
+      }
+
+      ctx.beginPath()
+      ctx.arc(t.x, t.y, r, 0, Math.PI * 2)
+      ctx.strokeStyle = active ? accent : alpha(accent, 0.42)
+      ctx.lineWidth = active ? 2.2 : 1.2
+      ctx.stroke()
+
+      ctx.beginPath()
+      ctx.arc(t.x, t.y, active ? 4 : 2, 0, Math.PI * 2)
+      ctx.fillStyle = active ? accent : alpha(accent, 0.42)
+      ctx.fill()
+    }
+  }
+
+  // The leader for the label being dragged, drawn from the place it would
+  // land on rather than from where it started — so the line answers the
+  // only question a drop has: which button is this about to become.
+  function drawDragLeader(ctx) {
+    if (!dragChip) return
+    var from = dropPlace !== "" ? targetPoint(dropPlace) : null
+    if (!from) {
+      for (var i = 0; i < buttons.length; i++) {
+        if (buttons[i].code === dragCode) { from = buttons[i]; break }
+      }
+    }
+    if (!from) return
+
+    var centre = dragChip.x + dragChip.w / 2
+    var enterX = centre < from.x ? dragChip.x + dragChip.w : dragChip.x
+
+    ctx.beginPath()
+    ctx.moveTo(from.x, from.y)
+    ctx.lineTo(enterX, dragChip.y)
+    ctx.strokeStyle = dropPlace !== "" ? accent : alpha(line, 0.30)
+    ctx.lineWidth = dropPlace !== "" ? 2.0 : 1.2
+    ctx.stroke()
   }
 
   // Nearest button within a forgiving radius, for click-to-select on the

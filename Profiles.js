@@ -164,34 +164,54 @@ function splitY(shapeName) {
 // Where a code sits on the shell, for a mouse we have no profile for.
 // Codes are laid out by the role they conventionally carry: the three
 // primaries on top, then side buttons stacked down the left flank, then
-// the right flank, then the palm. Anchors are snapped onto the outline
-// for flank buttons by anchorFor().
+// the right flank, then the palm.
+//
+// A slot points at a named place wherever one exists, so the coordinates
+// live in exactly one table. The role stays here: a mouse nobody has run
+// detection on should say "Back", which is what that button does today,
+// rather than "Left side, rear", which is only worth saying once the user
+// has told us that is where it is.
 var GENERIC_SLOTS = [
-  { code: 0x110, role: "Left click",  at: [0.27, 0.17], side: "left",  kind: "panel" },
-  { code: 0x111, role: "Right click", at: [0.73, 0.17], side: "right", kind: "panel" },
-  { code: 0x112, role: "Wheel click", at: [0.50, 0.26], side: "right", kind: "wheel" },
+  { code: 0x110, role: "Left click",  place: "left-click" },
+  { code: 0x111, role: "Right click", place: "right-click" },
+  { code: 0x112, role: "Wheel click", place: "wheel" },
   // Thumb buttons sit in physical order, not code order: the one nearer
   // the front of the shell is Forward (BTN_EXTRA) and the one nearer the
   // palm is Back (BTN_SIDE). Laying these out by ascending code puts the
   // labels the wrong way up against the actual buttons.
-  { code: 0x114, role: "Forward",     at: [0.00, 0.40], side: "left",  kind: "flank" },
-  { code: 0x113, role: "Back",        at: [0.00, 0.52], side: "left",  kind: "flank" },
-  { code: 0x115, role: "Side 3",      at: [0.00, 0.64], side: "left",  kind: "flank" },
-  { code: 0x116, role: "Side 4",      at: [0.00, 0.76], side: "left",  kind: "flank" },
-  { code: 0x117, role: "Right flank", at: [1.00, 0.44], side: "right", kind: "flank" },
-  { code: 0x118, role: "Right flank", at: [1.00, 0.56], side: "right", kind: "flank" },
-  { code: 0x119, role: "Palm",        at: [0.50, 0.60], side: "right", kind: "palm" },
-  { code: 0x11a, role: "Palm",        at: [0.50, 0.70], side: "right", kind: "palm" },
-  { code: 0x11b, role: "Palm",        at: [0.38, 0.80], side: "left",  kind: "palm" },
-  { code: 0x11c, role: "Palm",        at: [0.62, 0.80], side: "right", kind: "palm" },
-  { code: 0x11d, role: "Palm",        at: [0.38, 0.88], side: "left",  kind: "palm" },
-  { code: 0x11e, role: "Palm",        at: [0.62, 0.88], side: "right", kind: "palm" },
-  { code: 0x11f, role: "Palm",        at: [0.50, 0.94], side: "right", kind: "palm" }
+  { code: 0x114, role: "Forward",     place: "left-front" },
+  { code: 0x113, role: "Back",        place: "left-rear" },
+  { code: 0x115, role: "Side 3",      place: "left-third" },
+  { code: 0x116, role: "Side 4",      place: "left-fourth" },
+  { code: 0x117, role: "Right flank", place: "right-front" },
+  { code: 0x118, role: "Right flank", place: "right-rear" },
+  { code: 0x119, role: "Palm",        place: "palm" },
+  { code: 0x11a, role: "Palm",        place: "palm-rear" },
+  { code: 0x11b, role: "Palm",        place: "palm-left" },
+  { code: 0x11c, role: "Palm",        place: "palm-right" },
+  { code: 0x11d, role: "Palm",        place: "palm-left-rear" },
+  { code: 0x11e, role: "Palm",        place: "palm-right-rear" },
+  { code: 0x11f, role: "Palm",        place: "palm-tail" }
 ]
 
-function slotFor(code) {
+function genericSlot(code) {
   for (var i = 0; i < GENERIC_SLOTS.length; i++) if (GENERIC_SLOTS[i].code === code) return GENERIC_SLOTS[i]
-  return { code: code, role: "Extra button", at: [0.50, 0.66], side: "right", kind: "palm" }
+  return null
+}
+
+// The place a code sits in when nothing has been recorded for it. Every
+// code has one, which is what makes a swap always an exact exchange: the
+// button being displaced always has somewhere to go.
+function defaultPlace(code) {
+  var spec = genericSlot(code)
+  return spec ? spec.place : ""
+}
+
+function slotFor(code) {
+  var spec = genericSlot(code)
+  if (!spec) return { code: code, role: "Extra button", at: PLACES["palm"].at, side: "right", kind: "palm" }
+  var place = PLACES[spec.place]
+  return { code: code, role: spec.role, at: place.at, side: place.side, kind: place.kind }
 }
 
 // ------------------------------------------------------------ named places
@@ -216,7 +236,19 @@ var PLACES = {
   "left-third":   { role: "Left side, third",  at: [0.00, 0.66], side: "left",  kind: "flank" },
   "right-front":  { role: "Right side, front", at: [1.00, 0.40], side: "right", kind: "flank" },
   "right-rear":   { role: "Right side, rear",  at: [1.00, 0.53], side: "right", kind: "flank" },
-  "palm":         { role: "Palm button",       at: [0.50, 0.62], side: "right", kind: "palm" }
+  "palm":         { role: "Palm button",       at: [0.50, 0.62], side: "right", kind: "palm" },
+
+  // Spots the guided pass never asks about, because a mouse with this many
+  // buttons is rare enough not to be worth eight more questions. They are
+  // still named, so a button that lands on one can be swapped out of it
+  // like any other.
+  "left-fourth":     { role: "Left side, fourth", at: [0.00, 0.76], side: "left",  kind: "flank" },
+  "palm-rear":       { role: "Palm, rear",        at: [0.50, 0.70], side: "right", kind: "palm" },
+  "palm-left":       { role: "Palm, left",        at: [0.38, 0.80], side: "left",  kind: "palm" },
+  "palm-right":      { role: "Palm, right",       at: [0.62, 0.80], side: "right", kind: "palm" },
+  "palm-left-rear":  { role: "Palm, rear left",   at: [0.38, 0.88], side: "left",  kind: "palm" },
+  "palm-right-rear": { role: "Palm, rear right",  at: [0.62, 0.88], side: "right", kind: "palm" },
+  "palm-tail":       { role: "Palm, tail",        at: [0.50, 0.94], side: "right", kind: "palm" }
 }
 
 // The order the guided pass walks through, and what to ask for each one.
@@ -234,6 +266,66 @@ var PLACE_STEPS = [
 
 function places() { return PLACES }
 function placeSteps() { return PLACE_STEPS }
+
+// The places a button may be moved into: every named spot except the two
+// primary clicks, which detection assigns itself and which are not
+// somewhere a thumb button can be. The guided pass's own places come
+// first, because those are the ones nearly every mouse uses.
+function movablePlaces() {
+  var out = []
+  var i
+  for (i = 0; i < PLACE_STEPS.length; i++) out.push(PLACE_STEPS[i].place)
+  for (var id in PLACES) {
+    if (!Object.prototype.hasOwnProperty.call(PLACES, id)) continue
+    if (id === "left-click" || id === "right-click") continue
+    if (out.indexOf(id) === -1) out.push(id)
+  }
+  return out
+}
+
+function isMovablePlace(placeId) {
+  return movablePlaces().indexOf(String(placeId || "")) !== -1
+}
+
+// Where a button actually sits: what was recorded for it, or the place its
+// code conventionally occupies. The distinction matters when swapping — a
+// button sitting somewhere by default is just as much in the way as one
+// that was put there.
+function effectivePlace(layout, code) {
+  var recorded = layout ? (layout[code] || layout[String(code)]) : null
+  if (recorded) return String(recorded)
+  return defaultPlace(code)
+}
+
+// Move one button to a place, exchanging with whatever is already there.
+//
+// Returns a new layout; the argument is not modified. `codes` is every
+// button on the device, because an occupant sitting in the target by
+// default has no layout entry to find and would otherwise be left stacked
+// underneath the arriving button.
+//
+// Every code has a default place, so the mover always has a place to hand
+// back and the exchange is always exact — no button is ever displaced to
+// somewhere it was not asked to go, and no two ever share a spot.
+function movePlace(layout, codes, code, placeId) {
+  var next = {}
+  for (var k in layout) if (Object.prototype.hasOwnProperty.call(layout, k)) next[k] = layout[k]
+  if (!isMovablePlace(placeId)) return next
+
+  var from = effectivePlace(layout, code)
+  if (from === placeId) return next
+
+  var list = codes || []
+  for (var i = 0; i < list.length; i++) {
+    var other = list[i]
+    if (other === code) continue
+    if (effectivePlace(layout, other) !== placeId) continue
+    next[String(other)] = from
+  }
+
+  next[String(code)] = placeId
+  return next
+}
 
 function placeSlot(placeId, code) {
   var place = PLACES[placeId]
@@ -365,6 +457,11 @@ if (typeof module !== "undefined") {
     slotFor: slotFor,
     places: places,
     placeSteps: placeSteps,
+    movablePlaces: movablePlaces,
+    isMovablePlace: isMovablePlace,
+    defaultPlace: defaultPlace,
+    effectivePlace: effectivePlace,
+    movePlace: movePlace,
     placeSlot: placeSlot,
     PLACES: PLACES,
     anchorFor: anchorFor,
