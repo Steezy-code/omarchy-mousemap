@@ -230,3 +230,59 @@ assert.deepStrictEqual(A.modsFromQt(0x04000000 | 0x02000000), ["CTRL", "SHIFT"])
 assert.deepStrictEqual(A.modsFromQt(0), [])
 
 console.log("key capture: all assertions passed")
+
+// ---------------------------------------------------------------- triggers
+
+// The guided detect pass filters incoming presses through validTrigger.
+// It once inlined a 0x110..0x11f range check instead, which silently threw
+// away every keystroke button — the exact buttons that most need detecting,
+// because they are the ones a capability probe cannot see either.
+{
+  const D2 = require("../Devices.js")
+
+  // Real mouse buttons.
+  for (const code of [0x110, 0x112, 0x114, 0x11f]) {
+    assert.ok(C.validTrigger(code), `mouse button ${code} must be a valid trigger`)
+  }
+
+  // Keystroke triggers, including the two this was found on: KEY_2 (xkb 11)
+  // and KEY_LEFTCTRL (xkb 37).
+  for (const xkb of [9, 11, 37, 100, 255]) {
+    const id = D2.keyTrigger(xkb)
+    assert.ok(C.validTrigger(id), `key trigger for xkb ${xkb} (id ${id}) must be valid`)
+    assert.ok(D2.isKeyTrigger(id), "key trigger must report as one")
+    assert.strictEqual(D2.triggerBind(id), "code:" + xkb)
+  }
+
+  // Out of range on both sides.
+  assert.ok(!C.validTrigger(0x10f), "below BTN_LEFT is not a trigger")
+  assert.ok(!C.validTrigger(0x120), "above BTN range but below KEY_BASE is not a trigger")
+  assert.ok(!C.validTrigger(C.KEY_BASE + 256), "beyond the keycode range is not a trigger")
+  assert.ok(!C.validTrigger(NaN), "NaN is not a trigger")
+
+  // Anything the detect pass can capture must survive the round trip into
+  // config and back out as a binding.
+  const captured = [274, 276, D2.keyTrigger(11), D2.keyTrigger(37)]
+  const bindings = {}
+  const layout = {}
+  for (const id of captured) {
+    bindings[String(id)] = { action: "back" }
+    layout[String(id)] = "left-front"
+  }
+  const round = C.normalize({
+    scopeToDevice: true,
+    devices: { d: { learned: captured, layout, bindings } }
+  })
+  assert.deepStrictEqual(round.devices.d.learned, captured.slice().sort((a, b) => a - b),
+    "every captured trigger survives normalize")
+  assert.strictEqual(Object.keys(round.devices.d.bindings).length, captured.length,
+    "every captured trigger can carry a binding")
+
+  const emitted = C.generateLua(
+    [{ key: "d", label: "M", hyprName: "m", hyprKbdName: "m-kbd" }], round, A)
+  assert.strictEqual(emitted.binds, captured.length, "every captured trigger emits a bind")
+  assert.ok(emitted.text.includes('hl.bind("code:11"'), "keystroke trigger emitted")
+  assert.ok(emitted.text.includes('hl.bind("mouse:274"'), "mouse trigger emitted")
+}
+
+console.log("trigger round-trip: all assertions passed")

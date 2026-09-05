@@ -204,6 +204,14 @@ cmd_learn() {
       fi
 
       hyprctl eval "$lua" >/dev/null 2>&1 || die "learn: hyprctl eval failed"
+
+      # Report how many probes the compositor actually took. A silent zero
+      # here is indistinguishable from "the user has not pressed anything
+      # yet", which is the worst possible failure for a screen whose only
+      # instruction is to press something.
+      hyprctl binds -j 2>/dev/null \
+        | grep -c 'MouseMap learn' \
+        || echo 0
       ;;
     read)
       [ -f "$LEARN_LOG" ] && sort -un "$LEARN_LOG" || true

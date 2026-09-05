@@ -547,14 +547,9 @@ Item {
     learnSeen = []
     learnRev++
     learnedCodes = []
-    learnTimer.start()
-    // The keyboard name lets the probe also watch for buttons that send
-    // keystrokes; without it those buttons are invisible to detection.
-    learnProc.command = device && device.hyprKbdName
-      ? [root.helper, "learn", "arm", device.hyprKbdName]
-      : [root.helper, "learn", "arm"]
-    learnProc.running = true
-    say("Press each button as it is named. Left and right click are left alone.")
+    armFor = "learn"
+    arm()
+    say("Arming\u2026")
   }
 
   function skipLearnStep() {
@@ -613,12 +608,9 @@ Item {
     testConsumed = 0
     testPresses = 0
     selectedCode = -1
-    testTimer.start()
-    learnProc.command = device && device.hyprKbdName
-      ? [root.helper, "learn", "arm", device.hyprKbdName]
-      : [root.helper, "learn", "arm"]
-    learnProc.running = true
-    say("Press each button. It should light up where it sits on the mouse.")
+    armFor = "test"
+    arm()
+    say("Arming\u2026")
   }
 
   function stopTest() {
@@ -665,7 +657,52 @@ Item {
     }
   }
 
-  Process { id: learnProc }
+  // Which mode asked for the probes, so the right poll timer starts when
+  // arming finishes.
+  property string armFor: ""
+
+  function arm() {
+    // The keyboard name lets the probe also watch for buttons that send
+    // keystrokes; without it those buttons are invisible to detection.
+    learnProc.buffer = ""
+    learnProc.command = device && device.hyprKbdName
+      ? [root.helper, "learn", "arm", device.hyprKbdName]
+      : [root.helper, "learn", "arm"]
+    learnProc.running = true
+  }
+
+  Process {
+    id: learnProc
+    property string buffer: ""
+    stdout: StdioCollector { waitForEnd: true; onStreamFinished: learnProc.buffer = text }
+    onExited: function (code) {
+      if (code !== 0) {
+        root.learning = false
+        root.testing = false
+        root.say("Could not arm the button probe.", true)
+        return
+      }
+
+      // `learn arm` reports how many probes it registered. Zero means the
+      // compositor accepted nothing and no press will ever be seen, which
+      // is worth saying rather than sitting on a screen that never advances.
+      var armed = parseInt(String(learnProc.buffer).trim(), 10)
+      if (isFinite(armed) && armed === 0) {
+        root.learning = false
+        root.testing = false
+        root.say("The button probe did not register with Hyprland.", true)
+        return
+      }
+
+      if (root.armFor === "learn" && root.learning) {
+        learnTimer.start()
+        root.say("Press each button as it is named. Left and right click are left alone.")
+      } else if (root.armFor === "test" && root.testing) {
+        testTimer.start()
+        root.say("Press each button. It should light up where it sits on the mouse.")
+      }
+    }
+  }
   Process {
     id: disarmProc
     command: [root.helper, "learn", "disarm"]
@@ -682,7 +719,11 @@ Item {
       var lines = learnReadProc.buffer.split("\n")
       for (var i = 0; i < lines.length; i++) {
         var code = parseInt(lines[i].trim(), 10)
-        if (!isFinite(code) || code < 0x110 || code > 0x11f) continue
+        // Config.validTrigger is the single definition of what a trigger
+        // id may be. Re-stating the range here is what broke keystroke
+        // buttons: they are 4096+, and an inlined 0x110..0x11f check threw
+        // every one of them away before it could be recorded.
+        if (!Config.validTrigger(code)) continue
         // Only a code this pass has not already claimed advances the walk,
         // so holding a button or double-pressing cannot eat the next step.
         if (root.learnSeen.indexOf(code) !== -1) continue

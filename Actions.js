@@ -232,6 +232,12 @@ var ACTIONS = [
     command: "omarchy-shell shell toggle omarchy.clipboard" },
   { id: "omarchy-emoji", group: "Omarchy", label: "Emoji picker", kind: "exec",
     command: "omarchy-shell shell toggle omarchy.emojis" },
+  // Typed as a chord rather than run as a command, so it triggers whatever
+  // the user already has on this shortcut instead of hard-coding one
+  // dictation tool.
+  { id: "dictation", group: "Omarchy", label: "Toggle dictation", kind: "chord",
+    mods: "SUPER CTRL", key: "x",
+    hint: "Sends Super+Ctrl+X, whatever you have that bound to." },
 
   // -------------------------------------------------- media
   { id: "vol-up", group: "Media", label: "Volume up", kind: "exec",
