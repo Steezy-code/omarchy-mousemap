@@ -36,10 +36,17 @@ Open the map from its bar icon, or:
 omarchy-shell shell toggle io.github.steezy-code.mousemap
 ```
 
-Nothing is changed outside the plugin folder until you press **Apply** for the
-first time. That step adds one `dofile` line to `~/.config/hypr/bindings.lua`,
-inside `-- BEGIN mousemap` markers, and takes a one-time backup of that file
-at `bindings.lua.mousemap.bak` before it does.
+The first time you open the panel it sets itself up, because the panel cannot
+draw itself without it: the window rule that floats this window lives in the
+file it generates. Setup writes that generated file under
+`~/.local/state/omarchy-mousemap/`, takes a one-time backup of
+`~/.config/hypr/bindings.lua` at `bindings.lua.mousemap.bak`, and adds one
+`dofile` line to it inside `-- BEGIN mousemap` markers.
+
+That line is the only change ever made to a file you wrote, and nothing of
+yours is rewritten — everything outside the markers is preserved byte for
+byte. Your own mappings are a separate step: a button does nothing until you
+choose an action and press **Apply**.
 
 To update later:
 
