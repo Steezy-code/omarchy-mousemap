@@ -125,8 +125,9 @@ effective = base × (1 + sensitivity)
 ```
 
 `base` is what the mouse's own sensor is set to. MouseMap cannot read it and
-never changes it; you tell it in the panel, and set the sensor itself in G
-HUB, `solaar`, or `piper`/`ratbagd`.
+never changes it; you tell it in the panel, and set the sensor itself with
+your mouse's own configurator — `solaar`, `piper`/`ratbagd`, or a vendor tool
+such as G HUB.
 
 Two consequences worth knowing:
 
@@ -159,11 +160,12 @@ button, watch where it lights up, and drag its label if it is wrong.
 
 ### Detect buttons
 
-Behind a Logitech Unifying or Lightspeed receiver, the kernel cannot tell you
-which buttons the mouse has. The receiver is a HID multiplexer and advertises
-the union of everything it *could* ever carry — all sixteen `BTN_MOUSE` codes
-plus a full keyboard — regardless of what is paired to it. That is why a
-capability list alone is not trustworthy.
+Behind a wireless receiver the kernel often cannot tell you which buttons the
+mouse has. A receiver is a HID multiplexer: it advertises the union of
+everything it *could* ever carry — all sixteen `BTN_MOUSE` codes plus a full
+keyboard — regardless of what is actually paired to it. Logitech's Unifying
+and Lightspeed dongles are the common case, but anything that multiplexes
+behaves this way. That is why a capability list alone is not trustworthy.
 
 **Detect buttons** resolves it by watching: it temporarily binds every
 candidate button code, you press each button on your mouse, and whatever
@@ -183,11 +185,12 @@ no battery section.
 
 ## Buttons that type instead of clicking
 
-Plenty of mouse buttons never send a mouse button at all. A Logitech onboard
-profile that assigns a button a keystroke or a G-shift macro makes it arrive
-as a **keyboard key**, from the receiver's keyboard interface rather than its
-pointer one. A G Pro Wireless can easily have one thumb button sending `2` and
-the other sending `Left Ctrl`.
+Plenty of mouse buttons never send a mouse button at all. An onboard profile
+that assigns a button a keystroke or a shift-layer macro makes it arrive as a
+**keyboard key**, from the receiver's keyboard interface rather than its
+pointer one — vendor configurators all do this, Logitech's G HUB and Razer's
+Synapse among them. A gaming mouse can easily have one thumb button sending
+`2` and the other sending `Left Ctrl`.
 
 MouseMap handles these. The same physical mouse appears in Hyprland a second
 time as a keyboard, with its own device name, so the key can be bound scoped
@@ -205,9 +208,9 @@ device alongside its buttons, which is only safe because every one of those
 probe binds is scoped to the mouse.
 
 If you would rather have real mouse buttons, reassign them in the mouse's
-onboard profile with G HUB or `piper`/`ratbagd`. Be aware that this writes to
-the mouse, so unlike everything else here it *does* follow the device to
-other machines.
+onboard profile with its vendor configurator, or `piper`/`ratbagd`. Be aware
+that this writes to the mouse, so unlike everything else here it *does*
+follow the device to other machines.
 
 To see exactly what each button emits there is a read-only diagnostic. It
 opens `/dev/input/event*` directly, which is root-only on a normal desktop, so

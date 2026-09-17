@@ -1224,7 +1224,8 @@ Item {
                 visible: root.battery !== null
                 text: {
                   if (!root.battery) return ""
-                  var glyph = root.battery.charging ? "\uf0e7" : "\uf240"
+                  // Written as characters, not escapes; see the DPI glyph below.
+                  var glyph = root.battery.charging ? "" : ""
                   return glyph + "  " + Devices.batteryLabel(root.battery)
                 }
                 color: root.battery && root.battery.low ? Color.urgent : Color.accent
@@ -1245,9 +1246,16 @@ Item {
               }
               Text {
                 visible: root.dpiPreset !== null
-                // nf-md-mouse, the same glyph the OSD draws on a switch.
+                // nf-md-mouse, the same glyph the bar widget uses.
+                //
+                // Every icon glyph in this plugin is written as the character
+                // itself rather than a \u escape, and a test enforces it. An
+                // escape takes exactly four hex digits, so a codepoint above
+                // U+FFFF cannot be spelled that way at all: "\uf037d" is
+                // U+F037 followed by a literal "d". Writing the character
+                // makes that mistake unavailable.
                 text: root.dpiPreset
-                  ? "\uf037d  " + root.dpiPreset.dpi + " DPI · " + root.dpiPreset.name : ""
+                  ? "󰍽  " + root.dpiPreset.dpi + " DPI · " + root.dpiPreset.name : ""
                 color: Color.accent
                 font.family: Style.font.family
                 font.pixelSize: Style.font.bodySmall

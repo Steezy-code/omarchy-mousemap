@@ -382,7 +382,8 @@ Item {
         Text {
           Layout.fillWidth: true
           text: "What the sensor itself is set to. MouseMap never changes it and "
-              + "cannot read it — set it in G HUB, Solaar or Piper and say so here."
+              + "cannot read it — set it with your mouse's own configurator "
+              + "(Solaar, Piper, or a vendor tool) and say so here."
           wrapMode: Text.WordWrap
           color: Color.muted
           font.family: Style.font.family

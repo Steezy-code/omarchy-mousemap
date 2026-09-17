@@ -145,4 +145,33 @@ for (const script of ["scripts/mousemap", "scripts/mousemap-sniff"]) {
   assert.ok(/## Requirements|dependenc/i.test(readme), "README must document dependencies")
 }
 
+// ---------------------------------------------------------------- glyphs
+//
+// Icon glyphs are written as the character itself, never as a \u escape.
+//
+// An escape takes exactly four hex digits, which is not enough for the
+// Material Design range Nerd Fonts put above U+FFFF: a five-digit escape is
+// silently read as a four-digit one plus a literal character, so the label
+// renders as some unrelated icon with a stray letter after it. Writing the
+// character makes the mistake unavailable rather than merely discouraged.
+//
+// Comments are stripped first, so the note explaining this rule does not
+// trip it.
+{
+  const files = fs.readdirSync(root).filter(f => /\.(qml|js)$/.test(f))
+  const pua = /\\u[eEfF][0-9a-fA-F]{3}/
+
+  for (const file of files) {
+    const code = read(file)
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .split("\n")
+      .map(line => line.replace(/^\s*\/\/.*$/, ""))
+      .join("\n")
+
+    const hit = pua.exec(code)
+    assert.ok(!hit,
+      `${file} writes an icon glyph as ${hit && hit[0]}; write the character itself instead`)
+  }
+}
+
 console.log("manifest + packaging: all assertions passed")
