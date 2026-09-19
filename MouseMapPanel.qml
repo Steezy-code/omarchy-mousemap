@@ -941,7 +941,7 @@ Item {
 
     var found = learnSeen.length
     say(found === 0
-      ? "No buttons detected. If a button does nothing here it is probably sending a keystroke — see scripts/mousemap-sniff."
+      ? "No buttons detected. Try Test placement, or see \u201cButtons that type instead of clicking\u201d in the README."
       : "Found " + found + " button" + (found === 1 ? "" : "s") + ". Press Apply to save.")
   }
 

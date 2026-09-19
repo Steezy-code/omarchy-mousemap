@@ -45,8 +45,9 @@ for file in "${FILES[@]}"; do
 done
 
 cp -f "$SOURCE/scripts/mousemap" "$DEST/scripts/mousemap"
-cp -f "$SOURCE/scripts/mousemap-sniff" "$DEST/scripts/mousemap-sniff"
-chmod +x "$DEST/scripts/mousemap" "$DEST/scripts/mousemap-sniff"
+chmod +x "$DEST/scripts/mousemap"
+# An older install may still carry a diagnostic this plugin no longer ships.
+rm -f "$DEST/scripts/mousemap-sniff"
 
 echo "Installed to $DEST"
 

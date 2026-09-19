@@ -219,18 +219,16 @@ onboard profile with its vendor configurator, or `piper`/`ratbagd`. Be aware
 that this writes to the mouse, so unlike everything else here it *does*
 follow the device to other machines.
 
-To see exactly what each button emits there is a read-only diagnostic. It
-opens `/dev/input/event*` directly, which is root-only on a normal desktop, so
-it is the one thing here that needs elevation — and it is never run by the
-plugin, only by you, by hand:
+If a button still never shows up — in **Detect buttons** or **Test
+placement** — the compositor is not receiving anything from it, and the only
+place left to look is the raw kernel event stream. MouseMap deliberately ships
+nothing for that. Reading `/dev/input/event*` needs root, and root should only
+ever run code that cannot be swapped out while the password prompt is open,
+which rules out anything in a plugin folder the desktop user can write to. Use
+a packaged, root-owned tool instead, such as `evtest` from the Arch
+repositories.
 
-```bash
-sudo ./scripts/mousemap-sniff             # with a terminal
-pkexec ./scripts/mousemap-sniff --seconds 30   # without one
-```
-
-It prints what every press emits and flags any button that is sending a
-keystroke. It never writes anything, to the mouse or to disk.
+Nothing in MouseMap runs with elevated privileges, at any point.
 
 ## How it works
 
@@ -316,7 +314,6 @@ anchors also call, so a side-button marker can never drift off the drawn edge.
 | `ActionPicker.qml` | the rebinding sidebar |
 | `DpiPanel.qml` | the DPI sidebar |
 | `scripts/mousemap` | the only path to the filesystem and the compositor |
-| `scripts/mousemap-sniff` | root diagnostic for buttons that will not map |
 
 ## Tests
 

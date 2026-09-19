@@ -105,7 +105,7 @@ for (const required of ["README.md", "LICENSE", "manifest.json", "preview.png"])
   assert.ok(fs.existsSync(path.join(root, required)), `missing required file ${required}`)
 }
 
-for (const script of ["scripts/mousemap", "scripts/mousemap-sniff"]) {
+for (const script of ["scripts/mousemap"]) {
   const mode = fs.statSync(path.join(root, script)).mode
   assert.ok(mode & 0o111, `${script} must be executable in the repository`)
 }
@@ -171,6 +171,32 @@ for (const script of ["scripts/mousemap", "scripts/mousemap-sniff"]) {
     const hit = pua.exec(code)
     assert.ok(!hit,
       `${file} writes an icon glyph as ${hit && hit[0]}; write the character itself instead`)
+  }
+}
+
+// ---------------------------------------------------------------- privilege
+//
+// Nothing in the plugin folder may ever be run with elevated privileges,
+// and nothing here may tell the user to do it.
+//
+// The folder is writable by the desktop user. A privileged launcher opens
+// its target only after the password prompt is answered, so any process
+// running as that user can swap the file while the prompt is up and have
+// root run its code instead. The danger is not the command in the file; it
+// is where the file lives.
+{
+  const elevated = /\b(sudo|pkexec|doas|run0)\b[^\n`]*?(\.\/|scripts\/|\$(DEST|SOURCE|PLUGIN|HOME)|\/plugins\/)/
+  const files = ["README.md", "install"]
+    .concat(fs.readdirSync(root).filter(f => /\.(qml|js)$/.test(f)))
+    .concat(fs.readdirSync(path.join(root, "scripts")).map(f => "scripts/" + f))
+
+  for (const file of files) {
+    const lines = read(file).split("\n")
+    lines.forEach((line, i) => {
+      const hit = elevated.exec(line)
+      assert.ok(!hit,
+        `${file}:${i + 1} runs plugin-folder code with elevated privileges: ${line.trim()}`)
+    })
   }
 }
 
