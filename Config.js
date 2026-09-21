@@ -249,7 +249,7 @@ function dpiPreamble(slots, Actions, Dpi, helperPath) {
     var n = i + 1
     var sens = []
     for (var p = 0; p < slot.presets.length; p++) sens.push(Dpi.luaSensitivity(slot.presets[p].sensitivity))
-    lines.push("-- " + slot.label + "  [" + slot.name + "]  base " + slot.base + " DPI")
+    lines.push(Actions.luaComment(slot.label + "  [" + slot.name + "]  base " + slot.base + " DPI"))
     lines.push("mm_names[" + n + "] = " + Actions.luaString(slot.name))
     lines.push("mm_sens[" + n + "] = { " + sens.join(", ") + " }")
     // A stale state file can name a preset that has since been deleted.
@@ -338,7 +338,8 @@ function generateLua(devices, config, Actions, Dpi, helper) {
       continue
     }
 
-    lines.push("-- " + (device.label || device.key) + (scoped ? "  [" + device.hyprName + "]" : "  [all pointers]"))
+    lines.push(Actions.luaComment((device.label || device.key)
+      + (scoped ? "  [" + device.hyprName + "]" : "  [all pointers]")))
 
     for (var c = 0; c < codes.length; c++) {
       var code = codes[c]

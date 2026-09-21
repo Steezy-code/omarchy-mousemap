@@ -325,6 +325,59 @@ for (const id of [0, 0x10f, 0x120, 0xfff, C.KEY_BASE - 1, C.KEY_BASE + 256, NaN]
   assert.deepStrictEqual(Object.keys(C.deviceEntry(C.defaults(), "missing")).sort(), shape)
 }
 
+// ------------------------------------------------- comments are not code
+//
+// The generated file carries names nobody here chose: the device as
+// Hyprland reports it, a model string out of sysfs, a DPI preset the user
+// typed. They are written into `--` comment lines, and a comment ends at
+// the first newline — so a name carrying one would put whatever followed it
+// into a file the compositor executes.
+{
+  // A call carrying no string argument, so masking the literals cannot hide
+  // it: if this identifier survives in the code, the comment was escaped.
+  const payload = "mousemap_escape_marker()"
+  const hostile = "Mouse\n" + payload + "\n-- "
+
+  const devices = [{ key: "k", label: hostile, hyprName: hostile, hyprKbdName: "kbd" }]
+  const config = C.normalize({
+    version: 1, scopeToDevice: true,
+    devices: { k: {
+      label: hostile, learned: [274], layout: {},
+      bindings: { "274": { action: "copy", mods: [], key: "", command: "" } },
+      dpi: { enabled: true, base: 1600, active: 0,
+             presets: [{ name: hostile, dpi: 800 }] }
+    } }
+  })
+
+  const generated = C.generateLua(devices, config, A, Dpi, HELPER)
+  const os2 = require("os"), path2 = require("path")
+  const tmp = path2.join(os2.tmpdir(), "mousemap-comment-check.lua")
+  fs.writeFileSync(tmp, generated.text)
+  execFileSync("luac", ["-p", tmp])          // still a valid program
+  fs.rmSync(tmp, { force: true })
+
+  // The hostile text is allowed in two places: inside a string literal,
+  // where it is data, and after `--`, where it is a comment. Nowhere else.
+  // So mask the literals, drop the comments, and nothing of it may remain.
+  const masked = generated.text.replace(/"(?:[^"\\]|\\.)*"/g, '""')
+  const code = masked.split("\n").map(l => l.replace(/--.*$/, "")).join("\n")
+
+  assert.ok(!code.includes("mousemap_escape_marker"),
+    "the comment was escaped: the payload became a statement")
+  const leaked = code.match(/.*Mouse.*/)
+  assert.ok(!leaked, () => `hostile text escaped: ${JSON.stringify(leaked && leaked[0])}`)
+
+  // And the comment helper itself: one line in, one line out, always.
+  for (const nasty of ["a\nb", "a\rb", "tab\there", "x".repeat(400), "", null]) {
+    const out = A.luaComment(nasty)
+    assert.ok(out.startsWith("-- "), "comment must start with --")
+    assert.strictEqual(out.split("\n").length, 1, `comment spans lines: ${JSON.stringify(out)}`)
+    assert.ok(out.length <= 210, "comment is capped")
+  }
+}
+
+console.log("comments stay comments: all assertions passed")
+
 console.log("bind form + entry shape: all assertions passed")
 
 console.log("trigger round-trip: all assertions passed")

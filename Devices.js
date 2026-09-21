@@ -317,7 +317,9 @@ function normalizeBattery(raw) {
   var status = String(raw.status || "").trim()
   return {
     id: String(raw.id || ""),
-    model: String(raw.model || "").trim(),
+    // Straight off sysfs, and it becomes the device label, so it is
+    // flattened here rather than carried with whatever the device put in it.
+    model: cleanName(raw.model),
     percent: percent,
     level: String(raw.level || "").trim(),
     status: status,
@@ -421,7 +423,8 @@ function deviceKey(record, real) {
 }
 
 function cleanName(name) {
-  return String(name || "").replace(/\s+/g, " ").replace(/^ | $/g, "") || "Mouse"
+  var flat = String(name || "").replace(/[\u0000-\u001f\u007f]/g, " ")
+  return flat.replace(/\s+/g, " ").replace(/^ | $/g, "") || "Mouse"
 }
 
 function describeButtons(codes, profile) {

@@ -39,6 +39,24 @@ function luaString(value) {
   return '"' + out + '"'
 }
 
+// A comment line in the generated file.
+//
+// Comments carry names we did not choose — the device as Hyprland reports
+// it, a preset the user typed, a model string out of sysfs — and a comment
+// ends at the first newline. Anything after that newline would be read as
+// code by the compositor, so the text is flattened to one line and control
+// characters are dropped rather than trusted. Length is capped because a
+// comment is a label, not a payload.
+function luaComment(text) {
+  var s = String(text === undefined || text === null ? "" : text)
+  var out = ""
+  for (var i = 0; i < s.length && out.length < 200; i++) {
+    var code = s.charCodeAt(i)
+    out += (code < 0x20 || code === 0x7f) ? " " : s.charAt(i)
+  }
+  return "-- " + out.replace(/\s+/g, " ").replace(/^ | $/g, "")
+}
+
 // Modifier and key names are pasted into a Lua table, so they are matched
 // against a pattern instead of escaped: a key name is a short token, and
 // anything that is not one is a bug or an attack, not a key.
@@ -449,6 +467,7 @@ function emitReleaseBody(resolved, indent) {
 if (typeof module !== "undefined") {
   module.exports = {
     luaString: luaString,
+    luaComment: luaComment,
     normalizeMods: normalizeMods,
     validKey: validKey,
     keyLabel: keyLabel,
