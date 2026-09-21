@@ -151,7 +151,18 @@ cmd_reload() {
 # unbind, so re-running it is safe.
 cmd_live() {
   [ -f "$BINDINGS_LUA" ] || die "live: nothing generated yet"
-  hyprctl eval "pcall(dofile, \"$BINDINGS_LUA\")" >/dev/null 2>&1 || die "hyprctl eval failed"
+  # The path is ours, but it is built from $HOME and still crosses into Lua,
+  # so it is encoded rather than pasted. Same rule as everywhere else here.
+  local lua
+  lua="$(LUA_PATH_ARG="$BINDINGS_LUA" python3 -c '
+import os, sys
+value = os.environ["LUA_PATH_ARG"]
+if len(value) > 4096 or any(ord(c) < 0x20 or ord(c) == 0x7f for c in value):
+    sys.exit("live: implausible path")
+out = value.replace("\\", "\\\\").replace("\"", "\\\"")
+print("pcall(dofile, \"%s\")" % out)
+')" || exit 1
+  hyprctl eval "$lua" >/dev/null 2>&1 || die "hyprctl eval failed"
 }
 
 # ---------------------------------------------------------------- learn
@@ -175,39 +186,87 @@ LEARN_CODES="274 275 276 277 278 279 280 281 282 283 284 285 286 287"
 # is 4096 + the xkb keycode.
 KEY_BASE=4096
 
+# The probe payload.
+#
+# Every value that reaches Lua goes through a real encoder rather than being
+# pasted into a quoted string, because one of them is not ours: the keyboard
+# device name comes from `hyprctl devices -j`, and Hyprland's internal-name
+# conversion does not strip quotes or backslashes. A device advertising a
+# name with a quote in it could otherwise close `list = { "..." }` and have
+# the rest of its name evaluated as Lua by `hyprctl eval`.
+#
+# Same shape as dpi_preview(): python builds the whole payload, encodes with
+# lua_string(), shell-quotes the log path, and refuses implausible input.
+# `learn payload` prints it without evaluating, which is what the tests use.
+learn_payload() {
+  KBD="${1:-}" LOG="$LEARN_LOG" CODES="$LEARN_CODES" BASE="$KEY_BASE" python3 -c '
+import os, shlex, sys
+
+def lua_string(value):
+    out = []
+    for char in value:
+        point = ord(char)
+        if char == "\\": out.append("\\\\")
+        elif char == "\"": out.append("\\\"")
+        elif char == "\n": out.append("\\n")
+        elif char == "\r": out.append("\\r")
+        elif char == "\t": out.append("\\t")
+        elif point < 0x20 or point == 0x7f: out.append("\\%d" % point)
+        else: out.append(char)
+    return "\"" + "".join(out) + "\""
+
+def checked(label, value):
+    if len(value) > 128:
+        sys.exit("learn: implausible %s" % label)
+    if any(ord(c) < 0x20 or ord(c) == 0x7f for c in value):
+        sys.exit("learn: %s contains control characters" % label)
+    return value
+
+log = checked("log path", os.environ["LOG"])
+kbd = os.environ.get("KBD", "")
+base = int(os.environ["BASE"])
+
+def logger(expression):
+    # exec_cmd is handed to a shell, so the inner command is quoted once
+    # for that shell and the whole thing encoded once for Lua.
+    inner = "echo %s >> %s" % (expression, shlex.quote(log))
+    return "hl.dispatch(hl.dsp.exec_cmd(%s))" % lua_string("sh -c " + shlex.quote(inner))
+
+out = []
+for code in os.environ["CODES"].split():
+    if not code.isdigit():
+        sys.exit("learn: bad button code")
+    key = lua_string("mouse:" + code)
+    out.append("pcall(hl.unbind, %s)" % key)
+    out.append("hl.bind(%s, function() %s end, { description = %s })"
+               % (key, logger(code), lua_string("MouseMap learn " + code)))
+
+# A mouse whose onboard profile assigns a button a keystroke sends it from
+# the receiver keyboard interface, so a mouse-only probe never sees it.
+# Watching for it means binding keys, which is only safe because every one
+# of these is scoped to the mouse own keyboard device.
+if kbd:
+    checked("device name", kbd)
+    scope = "device = { inclusive = true, list = { %s } }" % lua_string(kbd)
+    for kc in range(9, 251):
+        key = lua_string("code:%d" % kc)
+        out.append("pcall(hl.unbind, %s)" % key)
+        out.append("hl.bind(%s, function() %s end, { description = %s, %s })"
+                   % (key, logger("$(( %d + %d ))" % (base, kc)),
+                      lua_string("MouseMap learn key %d" % kc), scope))
+
+print(" ".join(out))
+'
+}
+
 cmd_learn() {
   case "${1:-}" in
     arm)
       mkdir -p "$STATE_DIR"
       : >"$LEARN_LOG"
-      local lua=""
-      for code in $LEARN_CODES; do
-        lua+="pcall(hl.unbind, \"mouse:$code\") "
-        lua+="hl.bind(\"mouse:$code\", function() "
-        lua+="hl.dispatch(hl.dsp.exec_cmd(\"sh -c 'echo $code >> $LEARN_LOG'\")) "
-        lua+="end, { description = \"MouseMap learn $code\" }) "
-      done
 
-      # A mouse whose onboard profile assigns a button a keystroke sends it
-      # from the receiver's keyboard interface, so it never appears as a
-      # mouse button and a mouse-only probe cannot see it at all.
-      #
-      # Watching for it means binding keys — which is only safe because
-      # every one of these is scoped to the mouse's own keyboard device.
-      # The real keyboard is untouched, which is what makes it acceptable
-      # to grab a range this wide, modifiers included.
-      local kbd="${2:-}"
-      if [ -n "$kbd" ]; then
-        local kc
-        for kc in $(seq 9 250); do
-          lua+="pcall(hl.unbind, \"code:$kc\") "
-          lua+="hl.bind(\"code:$kc\", function() "
-          lua+="hl.dispatch(hl.dsp.exec_cmd(\"sh -c 'echo \$(( $KEY_BASE + $kc )) >> $LEARN_LOG'\")) "
-          lua+="end, { description = \"MouseMap learn key $kc\", "
-          lua+="device = { inclusive = true, list = { \"$kbd\" } } }) "
-        done
-      fi
-
+      local lua
+      lua="$(learn_payload "${2:-}")" || exit 1
       hyprctl eval "$lua" >/dev/null 2>&1 || die "learn: hyprctl eval failed"
 
       # Report how many probes the compositor actually took. A silent zero
@@ -217,6 +276,10 @@ cmd_learn() {
       hyprctl binds -j 2>/dev/null \
         | grep -c 'MouseMap learn' \
         || echo 0
+      ;;
+    payload)
+      # The generated Lua, without evaluating it. For the tests.
+      learn_payload "${2:-}"
       ;;
     read)
       [ -f "$LEARN_LOG" ] && sort -un "$LEARN_LOG" || true
@@ -233,7 +296,7 @@ cmd_learn() {
       rm -f "$LEARN_LOG"
       hyprctl reload >/dev/null 2>&1 || true
       ;;
-    *) die "learn: expected arm, read, raw, or disarm" ;;
+    *) die "learn: expected arm, payload, read, raw, or disarm" ;;
   esac
 }
 
@@ -415,7 +478,7 @@ PANEL_H=780
 cmd_float() {
   local address
   address="$(hyprctl clients -j 2>/dev/null | python3 -c '
-import json, sys
+import json, re, sys
 prefix = sys.argv[1]
 try:
     clients = json.load(sys.stdin)
@@ -423,7 +486,11 @@ except Exception:
     sys.exit(0)
 for client in clients:
     if str(client.get("title", "")).startswith(prefix) and not client.get("floating"):
-        print(client.get("address", ""))
+        address = str(client.get("address", ""))
+        # Interpolated into Lua below, so it has to be an address and
+        # nothing else.
+        if re.fullmatch(r"0x[0-9a-fA-F]{1,32}", address):
+            print(address)
         break
 ' "$PANEL_TITLE_PREFIX")"
 
@@ -507,7 +574,7 @@ usage: mousemap <command>
   reload            hyprctl reload, failing loudly on config errors
   live              load generated bindings into the running compositor
   float             float and size the panel window
-  learn arm|read|raw|disarm
+  learn arm|payload|read|raw|disarm
                     watch which buttons the mouse actually has
   dpi note <slot> <preset>
                     remember a DPI switch and show it on screen
